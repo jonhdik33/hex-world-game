@@ -1,0 +1,99 @@
+name: build-android
+
+# Собирает отладочный APK при каждой загрузке файлов в репозиторий
+# и по кнопке "Run workflow" на вкладке Actions.
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  android-debug:
+    runs-on: ubuntu-latest
+    container:
+      image: barichello/godot-ci:4.4.1
+    env:
+      GODOT_VERSION: "4.4.1"
+    steps:
+      - name: Получить файлы проекта
+        uses: actions/checkout@v4
+
+      - name: Подготовить шаблоны экспорта
+        run: |
+          set -e
+          mkdir -p "$HOME/.local/share/godot/export_templates" "$HOME/.config/godot"
+          DEST="$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable"
+          if [ ! -d "$DEST" ]; then
+            for SRC in "/root/.local/share/godot/export_templates/${GODOT_VERSION}.stable" "/root/.local/share/godot/templates/${GODOT_VERSION}.stable"; do
+              if [ -d "$SRC" ]; then
+                cp -r "$SRC" "$DEST"
+                break
+              fi
+            done
+          fi
+          echo "Шаблоны экспорта:"
+          ls "$HOME/.local/share/godot/export_templates" || true
+
+      - name: Настроить Android SDK, Java и отладочный ключ
+        run: |
+          set -e
+          # --- Android SDK ---
+          SDK=""
+          for CAND in "$ANDROID_HOME" "$ANDROID_SDK_ROOT" /usr/lib/android-sdk /opt/android-sdk /root/android-sdk /usr/local/lib/android/sdk; do
+            if [ -n "$CAND" ] && [ -d "$CAND/build-tools" ]; then
+              SDK="$CAND"
+              break
+            fi
+          done
+          if [ -z "$SDK" ]; then
+            echo "::error::Android SDK не найден в образе. Пришлите этот лог Claude."
+            ls /usr/lib /opt /root 2>/dev/null || true
+            exit 1
+          fi
+          echo "Android SDK: $SDK"
+          ls "$SDK" "$SDK/build-tools" || true
+
+          # --- Java ---
+          JAVA_BIN="$(readlink -f "$(which javac || which java)")"
+          JAVA_DIR="$(dirname "$(dirname "$JAVA_BIN")")"
+          echo "Java: $JAVA_DIR"
+
+          # --- отладочный ключ подписи ---
+          KS="$HOME/debug.keystore"
+          if [ ! -f "$KS" ]; then
+            keytool -keyalg RSA -genkeypair -alias androiddebugkey -keypass android \
+              -keystore "$KS" -storepass android \
+              -dname "CN=Android Debug,O=Android,C=US" -validity 9999 -deststoretype pkcs12
+          fi
+
+          # --- настройки редактора Godot ---
+          cat > "$HOME/.config/godot/editor_settings-4.tres" <<EOF
+          [gd_resource type="EditorSettings" format=3]
+
+          [resource]
+          export/android/java_sdk_path = "$JAVA_DIR"
+          export/android/android_sdk_path = "$SDK"
+          export/android/debug_keystore = "$KS"
+          export/android/debug_keystore_user = "androiddebugkey"
+          export/android/debug_keystore_pass = "android"
+          EOF
+          sed -i 's/^          //' "$HOME/.config/godot/editor_settings-4.tres"
+          cat "$HOME/.config/godot/editor_settings-4.tres"
+
+      - name: Импортировать ресурсы
+        run: |
+          timeout 300 godot --headless --verbose --import || true
+
+      - name: Собрать APK
+        run: |
+          mkdir -p build
+          godot --headless --verbose --export-debug "Android" build/hex-world-game.apk
+          ls -la build
+          test -f build/hex-world-game.apk
+
+      - name: Сохранить APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: hex-world-apk
+          path: build/hex-world-game.apk
