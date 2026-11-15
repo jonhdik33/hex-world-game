@@ -6,6 +6,7 @@ extends CanvasLayer
 signal confirm_pressed
 signal regen_pressed
 signal speed_selected(speed: int)
+signal build_pressed
 
 const GameState = preload("res://scripts/core/game_state.gd")
 
@@ -15,7 +16,15 @@ const SPEED_NAMES: Array = ["Пауза", "x1", "x2", "x3"]
 var _top_bar: PanelContainer
 var _lbl_money: Label
 var _lbl_fact: Label
+var _lbl_army: Label
 var _lbl_pop: Label
+var _balance_btn: Button
+var _balance_panel: PanelContainer
+var _balance_label: Label
+var _build_btn: Button
+var _toast: PanelContainer
+var _toast_label: Label
+var _toast_token: int = 0
 var _lbl_date: Label
 var _hint_panel: PanelContainer
 var _info_panel: PanelContainer
@@ -44,6 +53,7 @@ func _build() -> void:
 	_top_bar.add_child(row)
 	_lbl_money = _stat_label(row, Color(1.0, 0.86, 0.4))
 	_lbl_fact = _stat_label(row, Color(0.95, 0.6, 0.45))
+	_lbl_army = _stat_label(row, Color(0.75, 0.9, 0.6))
 	_lbl_pop = _stat_label(row, Color(0.6, 0.85, 1.0))
 	_lbl_date = _stat_label(row, Color(0.85, 0.9, 0.95))
 	_top_bar.visible = false
@@ -77,9 +87,47 @@ func _build() -> void:
 	_info_panel.offset_left = 8.0
 	_info_panel.offset_bottom = -8.0
 	_info_panel.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	var ibox := VBoxContainer.new()
+	_info_panel.add_child(ibox)
 	_info_label = _plain_label("", Color(0.92, 0.95, 1.0))
 	_info_label.custom_minimum_size = Vector2(330, 0)
-	_info_panel.add_child(_info_label)
+	ibox.add_child(_info_label)
+	_build_btn = Button.new()
+	_build_btn.add_theme_font_size_override("font_size", FONT)
+	_build_btn.pressed.connect(func(): build_pressed.emit())
+	_build_btn.visible = false
+	ibox.add_child(_build_btn)
+
+	# --- баланс (кнопка и окно слева сверху, во время игры) ---
+	_balance_btn = Button.new()
+	_balance_btn.text = "Баланс"
+	_balance_btn.toggle_mode = true
+	_balance_btn.add_theme_font_size_override("font_size", FONT)
+	add_child(_balance_btn)
+	_balance_btn.offset_left = 8.0
+	_balance_btn.offset_top = 76.0
+	_balance_btn.offset_right = 160.0
+	_balance_btn.toggled.connect(func(on: bool): _balance_panel.visible = on)
+	_balance_btn.visible = false
+	_balance_panel = _make_panel()
+	add_child(_balance_panel)
+	_balance_panel.offset_left = 8.0
+	_balance_panel.offset_top = 132.0
+	_balance_label = _plain_label("", Color(0.92, 0.95, 1.0))
+	_balance_label.custom_minimum_size = Vector2(380, 0)
+	_balance_panel.add_child(_balance_label)
+	_balance_panel.visible = false
+
+	# --- всплывающее сообщение (по центру сверху, во время игры) ---
+	_toast = _make_panel()
+	add_child(_toast)
+	_toast.anchor_left = 0.5
+	_toast.anchor_right = 0.5
+	_toast.offset_top = 76.0
+	_toast.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	_toast_label = _plain_label("", Color(1.0, 0.92, 0.6))
+	_toast.add_child(_toast_label)
+	_toast.visible = false
 
 	# --- окно выбора страны (по центру внизу) ---
 	_pick_panel = _make_panel()
@@ -125,7 +173,7 @@ func _build() -> void:
 		_speed_buttons.append(b)
 	_speed_box.visible = false
 
-	_blockers = [_top_bar, _hint_panel, _regen_btn, _info_panel, _pick_panel, _speed_box]
+	_blockers = [_top_bar, _hint_panel, _regen_btn, _info_panel, _pick_panel, _speed_box, _balance_btn, _balance_panel]
 
 
 # ---------- публичный интерфейс ----------
@@ -150,13 +198,43 @@ func enter_play() -> void:
 	_pick_panel.visible = false
 	_top_bar.visible = true
 	_speed_box.visible = true
+	_balance_btn.visible = true
 
 
-func set_resources(money: float, income: float, factories: int, pop: float, date_text: String) -> void:
-	_lbl_money.text = "Казна %s (+%s/день)" % [GameState.fmt(money), GameState.fmt(income)]
+func set_resources(money: float, net: float, factories: int, army: int, pop: float, date_text: String) -> void:
+	_lbl_money.text = "Казна %s (%s/день)" % [GameState.fmt(money), GameState.fmt_signed(net)]
+	var col := Color(1.0, 0.86, 0.4)
+	if money < 0.0:
+		col = Color(1.0, 0.4, 0.35)
+	_lbl_money.add_theme_color_override("font_color", col)
 	_lbl_fact.text = "Заводы %d" % factories
+	_lbl_army.text = "Армия %d" % army
 	_lbl_pop.text = "Население %s" % GameState.fmt(pop)
 	_lbl_date.text = date_text
+
+
+func set_balance_text(text: String) -> void:
+	_balance_label.text = text
+
+
+## Кнопка стройки под информацией о плитке.
+func set_build_option(shown: bool, text: String, enabled: bool) -> void:
+	_build_btn.visible = shown
+	_build_btn.text = text
+	_build_btn.disabled = not enabled
+
+
+func show_event(text: String) -> void:
+	_toast_label.text = text
+	_toast.visible = true
+	_toast_token += 1
+	var tok := _toast_token
+	get_tree().create_timer(3.5).timeout.connect(_hide_event.bind(tok))
+
+
+func _hide_event(tok: int) -> void:
+	if tok == _toast_token:
+		_toast.visible = false
 
 
 func set_speed_mark(speed: int) -> void:

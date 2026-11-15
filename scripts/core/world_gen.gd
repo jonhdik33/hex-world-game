@@ -8,6 +8,7 @@ extends RefCounted
 
 const World = preload("res://scripts/core/world.gd")
 const Names = preload("res://scripts/core/names.gd")
+const HexGrid = preload("res://scripts/core/hex_grid.gd")
 
 const HEX_R := 13.0              # размер плитки (пикселей маски). Меньше = больше плиток.
 const SAMPLE_RATIO := 0.6        # где брать пробы суши внутри плитки (доля радиуса)
@@ -16,6 +17,11 @@ const MIN_ISLAND_TILES := 2      # острова меньше этого уда
 const SMALL_ISLAND_TILES := 14   # острова меньше этого присоединяются к ближайшей стране
 const AVG_COUNTRY_TILES := 70.0  # средний размер страны (плиток)
 const GROW_CHANCE := 0.75        # шанс захватить соседнюю плитку за круг (рваность границ)
+
+# --- крупные морские ячейки ---
+const SEA_SCALE := 5.0           # во сколько раз морская ячейка больше плитки суши
+const SEA_MIN_INSIDE := 10       # сколько плиток суши-сетки должно попасть в ячейку (иначе она у края мира)
+const SEA_MIN_WATER := 0.2       # минимальная доля воды, чтобы ячейка была проходимой для флота
 
 # --- заводы и города (стартовые условия) ---
 const AVG_FACTORIES := 10.0      # среднее число заводов в обычной стране
@@ -43,7 +49,7 @@ static func build_land(world: World, mask: Image) -> void:
 		if votes >= MIN_LAND_VOTES:
 			world.land[i] = 1
 	_find_landmasses(world)
-	_compute_sea_dist(world)
+	_build_sea(world)
 
 
 static func _is_land(mask: Image, x: float, y: float, w: int, h: int) -> bool:
@@ -54,23 +60,40 @@ static func _is_land(mask: Image, x: float, y: float, w: int, h: int) -> bool:
 	return mask.get_pixel(px, py).r < 0.5   # тёмное = суша
 
 
-## Для каждой морской плитки считает расстояние до ближайшей суши (суша = 0).
-static func _compute_sea_dist(world: World) -> void:
-	world.sea_dist.fill(-1)
-	var queue: Array = []
+## Крупные морские ячейки (в SEA_SCALE раз больше плиток суши) на весь мир.
+## Для каждой считаем долю суши; ячейка "проходимая" (флот), если она в мире
+## и в ней достаточно воды. Суша рисуется поверх ячеек, поэтому берег не "ступенчатый".
+static func _build_sea(world: World) -> void:
+	var grid := HexGrid.new()
+	var b := world.bounds()
+	grid.setup(b.size.x, b.size.y, world.hex_r * SEA_SCALE)
+	world.sea_grid = grid
+	var n := grid.total()
+	var all_cnt := PackedInt32Array()
+	all_cnt.resize(n)
+	all_cnt.fill(0)
+	var land_cnt := PackedInt32Array()
+	land_cnt.resize(n)
+	land_cnt.fill(0)
 	for i in world.tile_total():
+		var j := grid.tile_at(world.center_of(i))
+		if j < 0:
+			continue
+		all_cnt[j] += 1
 		if world.land[i] == 1:
-			world.sea_dist[i] = 0
-			queue.append(i)
-	var head := 0
-	while head < queue.size():
-		var cur: int = queue[head]
-		head += 1
-		for d in 6:
-			var nb := world.neighbor(cur, d)
-			if nb >= 0 and world.sea_dist[nb] == -1:
-				world.sea_dist[nb] = world.sea_dist[cur] + 1
-				queue.append(nb)
+			land_cnt[j] += 1
+	world.sea_land_share.resize(n)
+	world.sea_navigable.resize(n)
+	world.sea_coastal.resize(n)
+	for j in n:
+		var total := all_cnt[j]
+		var share := 0.0
+		if total > 0:
+			share = float(land_cnt[j]) / float(total)
+		world.sea_land_share[j] = share
+		var ok := total >= SEA_MIN_INSIDE and (1.0 - share) >= SEA_MIN_WATER
+		world.sea_navigable[j] = 1 if ok else 0
+		world.sea_coastal[j] = 1 if land_cnt[j] > 0 else 0
 
 
 ## Находит связные массивы суши, удаляет совсем мелкие островки.

@@ -25,6 +25,7 @@ var playing: bool = false
 var speed: int = 1
 var _accum: float = 0.0
 var _picked: int = -1
+var _sel_land: int = -1
 
 
 func _ready() -> void:
@@ -57,8 +58,9 @@ func _ready() -> void:
 	hud.confirm_pressed.connect(_on_confirm)
 	hud.regen_pressed.connect(_on_regen)
 	hud.speed_selected.connect(_on_speed)
+	hud.build_pressed.connect(_on_build_pressed)
 
-	_show_tile_info(-1)
+	_show_info_empty()
 
 
 func _process(delta: float) -> void:
@@ -72,7 +74,7 @@ func _process(delta: float) -> void:
 		state.tick_day()
 		guard += 1
 	if guard > 0:
-		_refresh_hud()
+		_after_ticks()
 
 
 # ---------- события ----------
@@ -80,17 +82,46 @@ func _process(delta: float) -> void:
 func _on_tapped(screen_pos: Vector2, world_pos: Vector2) -> void:
 	if hud.is_over_ui(screen_pos):
 		return
-	var i := -1
-	if world.bounds().has_point(world_pos):
-		i = world.tile_at(world_pos)
-	map_view.select_tile(i)
+	if not world.bounds().has_point(world_pos):
+		_clear_all()
+		return
+
+	var i := world.tile_at(world_pos)
+	if i >= 0 and world.land[i] == 1:
+		_sel_land = i
+		map_view.select_land(i)
+		if not playing:
+			_pick_on_tile(i)
+		_show_land_info(i)
+		return
+
+	# нажали на воду: выбираем крупную морскую ячейку
+	_sel_land = -1
+	hud.set_build_option(false, "", false)
 	if not playing:
-		_pick_on_tile(i)
-	_show_tile_info(i)
+		_picked = -1
+		hud.hide_pick()
+	var j := world.sea_grid.tile_at(world_pos)
+	if j >= 0 and world.sea_navigable[j] == 1:
+		map_view.select_sea(j)
+		_show_sea_info(j)
+	else:
+		map_view.clear_selection()
+		_show_info_empty()
+
+
+func _clear_all() -> void:
+	_sel_land = -1
+	hud.set_build_option(false, "", false)
+	map_view.clear_selection()
+	if not playing:
+		_picked = -1
+		hud.hide_pick()
+	_show_info_empty()
 
 
 func _pick_on_tile(i: int) -> void:
-	if i >= 0 and world.land[i] == 1 and world.tile_owner[i] >= 0:
+	if world.tile_owner[i] >= 0:
 		_picked = world.tile_owner[i]
 		var cn: Dictionary = world.countries[_picked]
 		var text := "%s\nПлиток: %d · Городов: %d\nЗаводов: %d" % [cn["name"], cn["tiles"], cn["cities"], cn["factories"]]
@@ -113,6 +144,32 @@ func _on_confirm() -> void:
 	hud.enter_play()
 	hud.set_speed_mark(speed)
 	_refresh_hud()
+	if _sel_land >= 0:
+		_show_land_info(_sel_land)
+
+
+func _on_build_pressed() -> void:
+	if not playing or _sel_land < 0:
+		return
+	if state.start_build(state.player, _sel_land):
+		hud.show_event("Начато строительство завода: %d дн." % GameState.BUILD_DAYS)
+		map_view.set_construction(state.construction_tiles(state.player))
+		_refresh_hud()
+		_show_land_info(_sel_land)
+
+
+## После дневных тиков: сообщения, изменения карты, интерфейс.
+func _after_ticks() -> void:
+	if state.events.size() > 0:
+		hud.show_event("\n".join(state.events))
+		state.events = []
+	if state.map_dirty:
+		state.map_dirty = false
+		map_view.set_construction(state.construction_tiles(state.player))
+		map_view.refresh()
+		if _sel_land >= 0:
+			_show_land_info(_sel_land)
+	_refresh_hud()
 
 
 func _on_regen() -> void:
@@ -122,10 +179,12 @@ func _on_regen() -> void:
 	WorldGen.assign_countries(world, seed_value)
 	state.reset()
 	_picked = -1
+	_sel_land = -1
 	hud.hide_pick()
-	map_view.select_tile(-1)
+	map_view.clear_selection()
+	map_view.set_construction([])
 	map_view.refresh()
-	_show_tile_info(-1)
+	_show_info_empty()
 
 
 func _on_speed(s: int) -> void:
@@ -143,37 +202,78 @@ func _refresh_hud() -> void:
 	var cn: Dictionary = world.countries[cid]
 	hud.set_resources(
 		float(state.money[cid]),
-		state.daily_income(cid),
+		state.daily_net(cid),
 		int(cn["factories"]),
+		int(state.army[cid]),
 		float(state.population[cid]),
 		state.format_date()
 	)
+	hud.set_balance_text(_balance_text(cid))
 
 
-func _show_tile_info(t: int) -> void:
+func _balance_text(cid: int) -> String:
+	var b: Dictionary = state.budget(cid)
+	var army_n: int = state.army[cid]
+	var cn: Dictionary = world.countries[cid]
+	var lines: Array[String] = ["Баланс за день"]
+	lines.append("+ Налоги: %s" % GameState.fmt(b["tax"]))
+	lines.append("+ Заводы (%d): %s" % [cn["factories"], GameState.fmt(b["industry"])])
+	lines.append("- Заводы, содержание: %s" % GameState.fmt(b["upkeep_factories"]))
+	lines.append("- Города (%d): %s" % [cn["cities"], GameState.fmt(b["upkeep_cities"])])
+	lines.append("- Армия (%d див.): %s" % [army_n, GameState.fmt(b["upkeep_army"])])
+	lines.append("ИТОГО: %s/день" % GameState.fmt_signed(b["net"]))
+	var nb := state.construction_tiles(cid).size()
+	if nb > 0:
+		lines.append("Строек: %d" % nb)
+	return "\n".join(lines)
+
+
+func _show_info_empty() -> void:
+	hud.set_info("Карта №%d · стран: %d\nНажмите на плитку или на море" % [seed_value, world.countries.size()])
+
+
+func _show_land_info(t: int) -> void:
 	var lines: Array[String] = []
-	if t < 0:
-		lines.append("Карта №%d · стран: %d" % [seed_value, world.countries.size()])
-		lines.append("Нажмите на плитку")
-		hud.set_info("\n".join(lines))
-		return
-	if world.land[t] == 1:
-		var cid := world.tile_owner[t]
-		if cid >= 0:
-			var cn: Dictionary = world.countries[cid]
-			lines.append("Страна: %s" % cn["name"])
-			lines.append("Плиток: %d · Заводов: %d" % [cn["tiles"], cn["factories"]])
-		var kind := world.tile_city[t]
-		if kind == 2:
-			lines.append("Столица · заводов здесь: %d" % world.tile_factories[t])
-		elif kind == 1:
-			lines.append("Город · заводов здесь: %d" % world.tile_factories[t])
-		else:
-			lines.append("Земля")
+	var cid := world.tile_owner[t]
+	if cid >= 0:
+		var cn: Dictionary = world.countries[cid]
+		lines.append("Страна: %s" % cn["name"])
+		lines.append("Плиток: %d · Заводов: %d" % [cn["tiles"], cn["factories"]])
+	var kind := world.tile_city[t]
+	if kind == 2:
+		lines.append("Столица · заводов здесь: %d" % world.tile_factories[t])
+	elif kind == 1:
+		lines.append("Город · заводов здесь: %d" % world.tile_factories[t])
 	else:
-		if world.sea_dist[t] <= 2:
-			lines.append("Море: мелководье")
-		else:
-			lines.append("Море: открытый океан")
+		lines.append("Земля")
 	lines.append("Плитка: %d, %d" % [world.col_of(t), world.row_of(t)])
+	if playing and state.is_building(t):
+		lines.append("Строится завод: ещё %d дн." % state.build_days_left(t))
+	hud.set_info("\n".join(lines))
+	_update_build_option(t)
+
+
+func _update_build_option(t: int) -> void:
+	if not playing or world.tile_owner[t] != state.player:
+		hud.set_build_option(false, "", false)
+		return
+	var reason := state.build_block_reason(state.player, t)
+	var label := "Построить завод (%s)" % GameState.fmt(state.build_cost(t))
+	if reason != "" and reason != "Не хватает денег":
+		hud.set_build_option(true, reason, false)
+	else:
+		if reason != "":
+			label += " — не хватает денег"
+		hud.set_build_option(true, label, reason == "")
+
+
+func _show_sea_info(j: int) -> void:
+	var g := world.sea_grid
+	var lines: Array[String] = []
+	if world.sea_coastal[j] == 1:
+		lines.append("Море: прибрежные воды")
+	else:
+		lines.append("Море: открытый океан")
+	lines.append("Морская зона: %d, %d" % [g.col_of(j), g.row_of(j)])
+	lines.append("Суши в зоне: %d%%" % int(round(world.sea_land_share[j] * 100.0)))
 	hud.set_info("\n".join(lines))
