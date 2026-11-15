@@ -10,6 +10,8 @@ extends RefCounted
 const HexGrid = preload("res://scripts/core/hex_grid.gd")
 
 const SQRT3 := 1.7320508075688772
+const MAX_FACT_CITY := 10      # максимум заводов в обычном городе
+const MAX_FACT_CAPITAL := 20   # максимум заводов в столице
 
 # Соседи по сторонам: 0=E, 1=SE, 2=SW, 3=W, 4=NW, 5=NE.
 # Сторона k шестиугольника лежит между углами k и k+1 (см. corner()).
@@ -124,6 +126,13 @@ func neighbor(i: int, d: int) -> int:
 	if nc < 0 or nc >= cols or nr < 0 or nr >= rows:
 		return -1
 	return nr * cols + nc
+
+
+## Сколько заводов может стоять на плитке (по типу: столица / город).
+func max_factories(i: int) -> int:
+	if tile_city[i] == 2:
+		return MAX_FACT_CAPITAL
+	return MAX_FACT_CITY
 
 
 func land_neighbors(i: int) -> PackedInt32Array:

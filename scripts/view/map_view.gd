@@ -7,9 +7,9 @@ extends Node2D
 const World = preload("res://scripts/core/world.gd")
 
 const FRAME_COLOR := Color(0.02, 0.05, 0.11)   # как фон за краем мира
-const SEA_BASE := Color(0.07, 0.22, 0.45)
-const SEA_CELL_DEEP := Color(0.09, 0.27, 0.52)
-const SEA_CELL_COAST := Color(0.14, 0.38, 0.64)
+const SEA_BASE := Color(0.11, 0.31, 0.57)
+const SEA_CELL_DEEP := Color(0.12, 0.33, 0.60)
+const SEA_CELL_COAST := Color(0.14, 0.36, 0.63)
 const DIM_COLOR := Color(0.33, 0.38, 0.48)
 
 # Естественный берег: береговые углы плиток сдвигаются, а на каждой береговой
@@ -28,6 +28,7 @@ var _mid := PackedVector2Array()     # середины береговых ст�
 var _mid_ok := PackedByteArray()     # 1 = у стороны k есть середина (она береговая)
 var _poly: Array = []                # готовый многоугольник каждой плитки суши
 var _construction: Array = []        # плитки со стройкой (жёлтое кольцо)
+var _army := PackedInt32Array()      # дивизий на плитках (значок с числом)
 
 
 func setup(w: World) -> void:
@@ -53,6 +54,11 @@ func refresh() -> void:
 	queue_redraw()
 
 
+func set_army(a: PackedInt32Array) -> void:
+	_army = a
+	queue_redraw()
+
+
 func set_construction(tiles: Array) -> void:
 	_construction = tiles
 	queue_redraw()
@@ -64,6 +70,26 @@ func set_player(cid: int) -> void:
 
 
 # ---------- выделение ----------
+
+## Плитка суши под точкой мира с учётом неровного берега (по готовым многоугольникам).
+## Нужна, чтобы нажатие на видимую сушу, выступающую за границу шестиугольника, находило плитку.
+func pick_land(pos: Vector2) -> int:
+	var i0 := world.tile_at(pos)
+	var cands: Array = []
+	if i0 >= 0:
+		cands.append(i0)
+		for k in 6:
+			var n := world.neighbor(i0, k)
+			if n >= 0:
+				cands.append(n)
+	for c in cands:
+		var i: int = c
+		if world.land[i] == 1:
+			var poly: PackedVector2Array = _poly[i]
+			if Geometry2D.is_point_in_polygon(pos, poly):
+				return i
+	return -1
+
 
 func select_land(i: int) -> void:
 	if world == null or i < 0 or world.land[i] == 0:
@@ -297,6 +323,24 @@ func _draw() -> void:
 		else:
 			draw_circle(cc, world.hex_r * 0.40, Color(0.05, 0.05, 0.1, 0.9))
 			draw_circle(cc, world.hex_r * 0.28, Color(0.95, 0.95, 0.95, 1))
+
+	# армия: небольшой значок с числом дивизий под центром плитки
+	if _army.size() == world.tile_total():
+		var font := ThemeDB.fallback_font
+		var fs := int(world.hex_r * 0.75)
+		for i in world.tile_total():
+			if _army[i] <= 0 or world.land[i] == 0:
+				continue
+			var ac := world.center_of(i) + Vector2(0.0, world.hex_r * 0.55)
+			var mine_a := world.tile_owner[i] == player_country
+			var bw := world.hex_r * 1.05
+			var bh := world.hex_r * 0.8
+			var rect := Rect2(ac - Vector2(bw * 0.5, bh * 0.5), Vector2(bw, bh))
+			var bg := Color(0.05, 0.05, 0.1, 0.85)
+			if mine_a:
+				bg = Color(0.1, 0.35, 0.15, 0.95)
+			draw_rect(rect, bg)
+			draw_string(font, Vector2(rect.position.x, rect.position.y + bh * 0.82), str(_army[i]), HORIZONTAL_ALIGNMENT_CENTER, bw, fs, Color(1, 1, 1))
 
 	# стройки — жёлтые кольца
 	for t in _construction:

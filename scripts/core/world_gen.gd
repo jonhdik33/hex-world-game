@@ -11,6 +11,7 @@ const Names = preload("res://scripts/core/names.gd")
 const HexGrid = preload("res://scripts/core/hex_grid.gd")
 
 const HEX_R := 13.0              # размер плитки (пикселей маски). Меньше = больше плиток.
+const SLIVER_MAX_NEIGHBORS := 2   # слабая береговая плитка с таким числом соседей-суши и меньше убирается
 const SAMPLE_RATIO := 0.6        # где брать пробы суши внутри плитки (доля радиуса)
 const MIN_LAND_VOTES := 4        # из 7 проб столько должно попасть на сушу
 const MIN_ISLAND_TILES := 2      # острова меньше этого удаляются
@@ -36,6 +37,7 @@ static func build_land(world: World, mask: Image) -> void:
 	world.setup_size(float(mask.get_width()), float(mask.get_height()), HEX_R)
 	var w := mask.get_width()
 	var h := mask.get_height()
+	var weak: Array = []   # плитки, где суши еле хватило (кусочки берега)
 	for i in world.tile_total():
 		var c := world.center_of(i)
 		var votes := 0
@@ -48,8 +50,23 @@ static func build_land(world: World, mask: Image) -> void:
 				votes += 1
 		if votes >= MIN_LAND_VOTES:
 			world.land[i] = 1
+			if votes <= MIN_LAND_VOTES:
+				weak.append(i)
+	_prune_slivers(world, weak)
 	_find_landmasses(world)
 	_build_sea(world)
+
+
+## Слабые береговые плитки (суши еле-еле), у которых мало соседей-суши, убираем:
+## иначе получаются «кусочки» берега, на которые трудно нажать. Остальные остаются.
+static func _prune_slivers(world: World, weak: Array) -> void:
+	var drop: Array = []
+	for t in weak:
+		var i: int = t
+		if world.land_neighbors(i).size() <= SLIVER_MAX_NEIGHBORS:
+			drop.append(i)
+	for t in drop:
+		world.land[int(t)] = 0
 
 
 static func _is_land(mask: Image, x: float, y: float, w: int, h: int) -> bool:
@@ -415,6 +432,18 @@ static func _place_cities(world: World, rng: RandomNumberGenerator) -> void:
 		for t in cities:
 			world.tile_factories[int(t)] = 1
 		for f in range(cities.size(), fc):
-			var tt: int = lottery[rng.randi_range(0, lottery.size() - 1)]
+			# выбираем среди городов, где ещё есть место (лимит 10 / 20 в столице)
+			var open: Array = []
+			for t in lottery:
+				if world.tile_factories[int(t)] < world.max_factories(int(t)):
+					open.append(t)
+			if open.is_empty():
+				# все города заполнены: заводы, которым нет места, не создаём
+				break
+			var tt: int = open[rng.randi_range(0, open.size() - 1)]
 			world.tile_factories[tt] = mini(255, world.tile_factories[tt] + 1)
+		var total_f := 0
+		for t in cities:
+			total_f += world.tile_factories[int(t)]
+		world.countries[cid]["factories"] = total_f
 		world.countries[cid]["cities"] = cities.size()

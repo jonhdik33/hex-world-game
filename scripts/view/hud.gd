@@ -6,11 +6,12 @@ extends CanvasLayer
 signal confirm_pressed
 signal regen_pressed
 signal speed_selected(speed: int)
-signal build_pressed
+signal action_pressed(id: String)
 
 const GameState = preload("res://scripts/core/game_state.gd")
 
 const FONT := 22
+const ACTION_SLOTS := 5
 const SPEED_NAMES: Array = ["Пауза", "x1", "x2", "x3"]
 
 var _top_bar: PanelContainer
@@ -21,7 +22,8 @@ var _lbl_pop: Label
 var _balance_btn: Button
 var _balance_panel: PanelContainer
 var _balance_label: Label
-var _build_btn: Button
+var _action_btns: Array = []
+var _action_ids: Array = []
 var _toast: PanelContainer
 var _toast_label: Label
 var _toast_token: int = 0
@@ -92,11 +94,14 @@ func _build() -> void:
 	_info_label = _plain_label("", Color(0.92, 0.95, 1.0))
 	_info_label.custom_minimum_size = Vector2(330, 0)
 	ibox.add_child(_info_label)
-	_build_btn = Button.new()
-	_build_btn.add_theme_font_size_override("font_size", FONT)
-	_build_btn.pressed.connect(func(): build_pressed.emit())
-	_build_btn.visible = false
-	ibox.add_child(_build_btn)
+	for n in ACTION_SLOTS:
+		var ab := Button.new()
+		ab.add_theme_font_size_override("font_size", FONT)
+		ab.pressed.connect(_on_action_pressed.bind(n))
+		ab.visible = false
+		ibox.add_child(ab)
+		_action_btns.append(ab)
+		_action_ids.append("")
 
 	# --- баланс (кнопка и окно слева сверху, во время игры) ---
 	_balance_btn = Button.new()
@@ -217,11 +222,25 @@ func set_balance_text(text: String) -> void:
 	_balance_label.text = text
 
 
-## Кнопка стройки под информацией о плитке.
-func set_build_option(shown: bool, text: String, enabled: bool) -> void:
-	_build_btn.visible = shown
-	_build_btn.text = text
-	_build_btn.disabled = not enabled
+## Кнопки действий под информацией о плитке. Каждое действие: {"id": "...", "text": "...", "enabled": bool}.
+func set_actions(list: Array) -> void:
+	for n in ACTION_SLOTS:
+		var b: Button = _action_btns[n]
+		if n < list.size():
+			var a: Dictionary = list[n]
+			_action_ids[n] = a["id"]
+			b.text = a["text"]
+			b.disabled = not bool(a["enabled"])
+			b.visible = true
+		else:
+			_action_ids[n] = ""
+			b.visible = false
+
+
+func _on_action_pressed(n: int) -> void:
+	var id: String = _action_ids[n]
+	if id != "":
+		action_pressed.emit(id)
 
 
 func show_event(text: String) -> void:

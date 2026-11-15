@@ -26,6 +26,8 @@ var speed: int = 1
 var _accum: float = 0.0
 var _picked: int = -1
 var _sel_land: int = -1
+var _move_from: int = -1      # режим «двигать»: откуда
+var _move_count: int = 0      # сколько дивизий (большое число = все)
 
 
 func _ready() -> void:
@@ -58,7 +60,7 @@ func _ready() -> void:
 	hud.confirm_pressed.connect(_on_confirm)
 	hud.regen_pressed.connect(_on_regen)
 	hud.speed_selected.connect(_on_speed)
-	hud.build_pressed.connect(_on_build_pressed)
+	hud.action_pressed.connect(_on_action)
 
 	_show_info_empty()
 
@@ -86,8 +88,12 @@ func _on_tapped(screen_pos: Vector2, world_pos: Vector2) -> void:
 		_clear_all()
 		return
 
-	var i := world.tile_at(world_pos)
-	if i >= 0 and world.land[i] == 1:
+	var i := map_view.pick_land(world_pos)
+	if i >= 0 and _move_from >= 0 and playing:
+		if _try_move(i):
+			return
+	if i >= 0:
+		_move_from = -1
 		_sel_land = i
 		map_view.select_land(i)
 		if not playing:
@@ -97,7 +103,8 @@ func _on_tapped(screen_pos: Vector2, world_pos: Vector2) -> void:
 
 	# нажали на воду: выбираем крупную морскую ячейку
 	_sel_land = -1
-	hud.set_build_option(false, "", false)
+	_move_from = -1
+	hud.set_actions([])
 	if not playing:
 		_picked = -1
 		hud.hide_pick()
@@ -112,7 +119,8 @@ func _on_tapped(screen_pos: Vector2, world_pos: Vector2) -> void:
 
 func _clear_all() -> void:
 	_sel_land = -1
-	hud.set_build_option(false, "", false)
+	_move_from = -1
+	hud.set_actions([])
 	map_view.clear_selection()
 	if not playing:
 		_picked = -1
@@ -141,6 +149,7 @@ func _on_confirm() -> void:
 	speed = 1
 	_accum = 0.0
 	map_view.set_player(_picked)
+	map_view.set_army(state.tile_army)
 	hud.enter_play()
 	hud.set_speed_mark(speed)
 	_refresh_hud()
@@ -148,14 +157,55 @@ func _on_confirm() -> void:
 		_show_land_info(_sel_land)
 
 
-func _on_build_pressed() -> void:
+func _on_action(id: String) -> void:
 	if not playing or _sel_land < 0:
 		return
-	if state.start_build(state.player, _sel_land):
-		hud.show_event("Начато строительство завода: %d дн." % GameState.BUILD_DAYS)
+	var cid := state.player
+	var t := _sel_land
+	if id == "build":
+		if state.start_build(cid, t):
+			hud.show_event("Начато строительство завода: %d дн." % GameState.BUILD_DAYS)
+			map_view.set_construction(state.construction_tiles(cid))
+	elif id == "recruit":
+		if state.recruit(cid, t):
+			hud.show_event("Нанята дивизия")
+			map_view.set_army(state.tile_army)
+	elif id == "disband":
+		if state.disband(cid, t):
+			hud.show_event("Дивизия распущена")
+			map_view.set_army(state.tile_army)
+	elif id == "move_all" or id == "move_one":
+		_move_from = t
+		_move_count = 1
+		if id == "move_all":
+			_move_count = 9999
+		hud.show_event("Нажмите на соседнюю плитку")
+		return
+	_refresh_hud()
+	_show_land_info(t)
+
+
+## Тап в режиме «двигать»: true, если тап обработан как ход.
+func _try_move(to: int) -> bool:
+	var from := _move_from
+	_move_from = -1
+	if not state.is_adjacent(from, to):
+		return false
+	var msg := state.move_army(state.player, from, to, _move_count)
+	if msg == "":
+		hud.show_event("Ход невозможен")
+		return true
+	hud.show_event(msg)
+	map_view.set_army(state.tile_army)
+	if state.map_dirty:
+		state.map_dirty = false
 		map_view.set_construction(state.construction_tiles(state.player))
-		_refresh_hud()
-		_show_land_info(_sel_land)
+		map_view.refresh()
+	_sel_land = to
+	map_view.select_land(to)
+	_refresh_hud()
+	_show_land_info(to)
+	return true
 
 
 ## После дневных тиков: сообщения, изменения карты, интерфейс.
@@ -169,6 +219,7 @@ func _after_ticks() -> void:
 		map_view.refresh()
 		if _sel_land >= 0:
 			_show_land_info(_sel_land)
+	map_view.set_army(state.tile_army)
 	_refresh_hud()
 
 
@@ -183,6 +234,7 @@ func _on_regen() -> void:
 	hud.hide_pick()
 	map_view.clear_selection()
 	map_view.set_construction([])
+	map_view.set_army(PackedInt32Array())
 	map_view.refresh()
 	_show_info_empty()
 
@@ -247,24 +299,43 @@ func _show_land_info(t: int) -> void:
 	else:
 		lines.append("Земля")
 	lines.append("Плитка: %d, %d" % [world.col_of(t), world.row_of(t)])
+	if playing and state.army_on(t) > 0:
+		lines.append("Дивизий здесь: %d" % state.army_on(t))
 	if playing and state.is_building(t):
 		lines.append("Строится завод: ещё %d дн." % state.build_days_left(t))
 	hud.set_info("\n".join(lines))
-	_update_build_option(t)
+	_update_actions(t)
 
 
-func _update_build_option(t: int) -> void:
+func _update_actions(t: int) -> void:
 	if not playing or world.tile_owner[t] != state.player:
-		hud.set_build_option(false, "", false)
+		hud.set_actions([])
 		return
-	var reason := state.build_block_reason(state.player, t)
+	var cid := state.player
+	var list: Array = []
+	# строить завод
+	var reason := state.build_block_reason(cid, t)
 	var label := "Построить завод (%s)" % GameState.fmt(state.build_cost(t))
-	if reason != "" and reason != "Не хватает денег":
-		hud.set_build_option(true, reason, false)
+	if reason == "":
+		list.append({"id": "build", "text": label, "enabled": true})
+	elif reason == "Не хватает денег":
+		list.append({"id": "build", "text": label + " — нет денег", "enabled": false})
 	else:
-		if reason != "":
-			label += " — не хватает денег"
-		hud.set_build_option(true, label, reason == "")
+		list.append({"id": "build", "text": reason, "enabled": false})
+	# армия
+	if world.tile_city[t] != 0:
+		var r2 := state.recruit_block_reason(cid, t)
+		var l2 := "Нанять дивизию (%s)" % GameState.fmt(GameState.RECRUIT_COST)
+		if r2 == "Не хватает денег":
+			l2 += " — нет денег"
+		list.append({"id": "recruit", "text": l2, "enabled": r2 == ""})
+	var a := state.army_on(t)
+	if a > 0:
+		list.append({"id": "move_all", "text": "Двинуть все дивизии (%d)" % a, "enabled": true})
+		if a > 1:
+			list.append({"id": "move_one", "text": "Двинуть одну дивизию", "enabled": true})
+		list.append({"id": "disband", "text": "Распустить одну дивизию", "enabled": true})
+	hud.set_actions(list)
 
 
 func _show_sea_info(j: int) -> void:
