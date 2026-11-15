@@ -23,10 +23,11 @@ func fit_to(rect: Rect2) -> void:
 	world_rect = rect
 	var vp := get_viewport_rect().size
 	var z := minf(vp.x / rect.size.x, vp.y / rect.size.y)
-	min_zoom = z * 0.9
+	min_zoom = z   # дальше отдалить нельзя: виден весь игровой мир, ни пикселя за его краем
 	max_zoom = z * 8.0
 	zoom = Vector2(z, z)
 	position = rect.get_center()
+	_clamp_position()
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -137,6 +138,17 @@ func _zoom_at(screen_pos: Vector2, factor: float) -> void:
 	_clamp_position()
 
 
+## Камера не показывает ничего за краем мира. Если мир целиком помещается
+## по ширине или высоте — по этой оси камера стоит по центру.
 func _clamp_position() -> void:
-	position.x = clampf(position.x, world_rect.position.x, world_rect.end.x)
-	position.y = clampf(position.y, world_rect.position.y, world_rect.end.y)
+	var half := get_viewport_rect().size * 0.5 / zoom.x
+	var lo := world_rect.position + half
+	var hi := world_rect.end - half
+	if lo.x > hi.x:
+		position.x = world_rect.get_center().x
+	else:
+		position.x = clampf(position.x, lo.x, hi.x)
+	if lo.y > hi.y:
+		position.y = world_rect.get_center().y
+	else:
+		position.y = clampf(position.y, lo.y, hi.y)

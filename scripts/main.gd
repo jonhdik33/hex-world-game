@@ -1,25 +1,35 @@
 extends Node
-## Точка входа. Собирает мир, карту, камеру и простой интерфейс.
-## Всё создаётся кодом, поэтому сцена main.tscn почти пустая.
+## Точка входа и "дирижёр": собирает мир, карту, камеру, интерфейс и ведёт игру.
+## Две фазы: выбор страны (playing = false) и сама игра (playing = true).
 
 const World = preload("res://scripts/core/world.gd")
 const WorldGen = preload("res://scripts/core/world_gen.gd")
+const GameState = preload("res://scripts/core/game_state.gd")
 const MapView = preload("res://scripts/view/map_view.gd")
 const CameraCtl = preload("res://scripts/view/camera_controller.gd")
+const Hud = preload("res://scripts/view/hud.gd")
 
 const MASK_PATH := "res://assets/map_mask.png"
 const START_SEED := 12345
+# секунд реального времени на один игровой день; индекс = скорость (0 = пауза)
+const DAY_SECONDS: Array = [0.0, 3.0, 1.5, 0.6]
 
 var world: World
+var state: GameState
 var map_view: MapView
 var camera: CameraCtl
-var info_label: Label
+var hud: Hud
+
 var seed_value: int = START_SEED
-var _ui_controls: Array[Control] = []
+var playing: bool = false
+var speed: int = 1
+var _accum: float = 0.0
+var _picked: int = -1
 
 
 func _ready() -> void:
-	RenderingServer.set_default_clear_color(Color(0.07, 0.22, 0.45))
+	# тёмный фон: за краем игрового мира ничего нет (камера туда не заходит)
+	RenderingServer.set_default_clear_color(Color(0.02, 0.05, 0.11))
 
 	var tex := load(MASK_PATH) as Texture2D
 	if tex == null:
@@ -30,6 +40,7 @@ func _ready() -> void:
 	world = World.new()
 	WorldGen.build_land(world, mask)
 	WorldGen.assign_countries(world, seed_value)
+	state = GameState.new(world)
 
 	map_view = MapView.new()
 	add_child(map_view)
@@ -38,77 +49,131 @@ func _ready() -> void:
 	camera = CameraCtl.new()
 	add_child(camera)
 	camera.make_current()
-	camera.fit_to(Rect2(Vector2.ZERO, Vector2(world.width_px, world.height_px)))
+	camera.fit_to(world.bounds())
 	camera.tapped.connect(_on_tapped)
 
-	_build_ui()
-	_update_info()
+	hud = Hud.new()
+	add_child(hud)
+	hud.confirm_pressed.connect(_on_confirm)
+	hud.regen_pressed.connect(_on_regen)
+	hud.speed_selected.connect(_on_speed)
+
+	_show_tile_info(-1)
 
 
-func _build_ui() -> void:
-	var layer := CanvasLayer.new()
-	add_child(layer)
-
-	var panel := PanelContainer.new()
-	panel.position = Vector2(12, 12)
-	layer.add_child(panel)
-	_ui_controls.append(panel)
-
-	var margin := MarginContainer.new()
-	for side in ["left", "right", "top", "bottom"]:
-		margin.add_theme_constant_override("margin_" + side, 10)
-	panel.add_child(margin)
-
-	info_label = Label.new()
-	info_label.add_theme_font_size_override("font_size", 22)
-	info_label.custom_minimum_size = Vector2(380, 0)
-	margin.add_child(info_label)
-
-	var btn := Button.new()
-	btn.text = "Новые границы"
-	btn.add_theme_font_size_override("font_size", 22)
-	layer.add_child(btn)
-	btn.anchor_left = 1.0
-	btn.anchor_right = 1.0
-	btn.offset_left = -250.0
-	btn.offset_right = -12.0
-	btn.offset_top = 12.0
-	btn.offset_bottom = 66.0
-	btn.pressed.connect(_on_regen_pressed)
-	_ui_controls.append(btn)
+func _process(delta: float) -> void:
+	if not playing or speed <= 0:
+		return
+	_accum += delta
+	var step: float = DAY_SECONDS[speed]
+	var guard := 0
+	while _accum >= step and guard < 20:
+		_accum -= step
+		state.tick_day()
+		guard += 1
+	if guard > 0:
+		_refresh_hud()
 
 
-func _on_regen_pressed() -> void:
-	seed_value += 1
-	WorldGen.assign_countries(world, seed_value)
-	map_view.select_tile(-1)
-	map_view.refresh()
-	_update_info()
-
+# ---------- события ----------
 
 func _on_tapped(screen_pos: Vector2, world_pos: Vector2) -> void:
-	for c in _ui_controls:
-		if c.get_global_rect().has_point(screen_pos):
-			return
-	var i := world.tile_at(world_pos)
-	if i >= 0 and world.land[i] == 1:
-		map_view.select_tile(i)
+	if hud.is_over_ui(screen_pos):
+		return
+	var i := -1
+	if world.bounds().has_point(world_pos):
+		i = world.tile_at(world_pos)
+	map_view.select_tile(i)
+	if not playing:
+		_pick_on_tile(i)
+	_show_tile_info(i)
+
+
+func _pick_on_tile(i: int) -> void:
+	if i >= 0 and world.land[i] == 1 and world.tile_owner[i] >= 0:
+		_picked = world.tile_owner[i]
+		var cn: Dictionary = world.countries[_picked]
+		var text := "%s\nПлиток: %d · Городов: %d\nЗаводов: %d" % [cn["name"], cn["tiles"], cn["cities"], cn["factories"]]
+		if cn["mega"]:
+			text += "\nПромышленный гигант"
+		hud.show_pick(text)
 	else:
-		map_view.select_tile(-1)
-	_update_info()
+		_picked = -1
+		hud.hide_pick()
 
 
-func _update_info() -> void:
+func _on_confirm() -> void:
+	if _picked < 0:
+		return
+	state.player = _picked
+	playing = true
+	speed = 1
+	_accum = 0.0
+	map_view.set_player(_picked)
+	hud.enter_play()
+	hud.set_speed_mark(speed)
+	_refresh_hud()
+
+
+func _on_regen() -> void:
+	if playing:
+		return
+	seed_value += 1
+	WorldGen.assign_countries(world, seed_value)
+	state.reset()
+	_picked = -1
+	hud.hide_pick()
+	map_view.select_tile(-1)
+	map_view.refresh()
+	_show_tile_info(-1)
+
+
+func _on_speed(s: int) -> void:
+	speed = s
+	_accum = 0.0
+	hud.set_speed_mark(speed)
+
+
+# ---------- интерфейс ----------
+
+func _refresh_hud() -> void:
+	var cid := state.player
+	if cid < 0:
+		return
+	var cn: Dictionary = world.countries[cid]
+	hud.set_resources(
+		float(state.money[cid]),
+		state.daily_income(cid),
+		int(cn["factories"]),
+		float(state.population[cid]),
+		state.format_date()
+	)
+
+
+func _show_tile_info(t: int) -> void:
 	var lines: Array[String] = []
-	lines.append("Hex World — карта №%d" % seed_value)
-	lines.append("Плиток суши: %d, стран: %d" % [world.land_count, world.countries.size()])
-	var t: int = map_view.selected_tile
-	if t >= 0:
+	if t < 0:
+		lines.append("Карта №%d · стран: %d" % [seed_value, world.countries.size()])
+		lines.append("Нажмите на плитку")
+		hud.set_info("\n".join(lines))
+		return
+	if world.land[t] == 1:
 		var cid := world.tile_owner[t]
 		if cid >= 0:
 			var cn: Dictionary = world.countries[cid]
-			lines.append("Страна: %s (плиток: %d)" % [cn["name"], cn["tiles"]])
-		lines.append("Плитка: %d, %d" % [world.col_of(t), world.row_of(t)])
+			lines.append("Страна: %s" % cn["name"])
+			lines.append("Плиток: %d · Заводов: %d" % [cn["tiles"], cn["factories"]])
+		var kind := world.tile_city[t]
+		if kind == 2:
+			lines.append("Столица · заводов здесь: %d" % world.tile_factories[t])
+		elif kind == 1:
+			lines.append("Город · заводов здесь: %d" % world.tile_factories[t])
+		else:
+			lines.append("Земля")
 	else:
-		lines.append("Нажмите на плитку суши")
-	info_label.text = "\n".join(lines)
+		if world.sea_dist[t] <= 2:
+			lines.append("Море: мелководье")
+		else:
+			lines.append("Море: открытый океан")
+	lines.append("Плитка: %d, %d" % [world.col_of(t), world.row_of(t)])
+	hud.set_info("\n".join(lines))

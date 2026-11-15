@@ -17,6 +17,14 @@ const SMALL_ISLAND_TILES := 14   # острова меньше этого при
 const AVG_COUNTRY_TILES := 70.0  # средний размер страны (плиток)
 const GROW_CHANCE := 0.75        # шанс захватить соседнюю плитку за круг (рваность границ)
 
+# --- заводы и города (стартовые условия) ---
+const AVG_FACTORIES := 10.0      # среднее число заводов в обычной стране
+const FACTORY_MIN_RATIO := 0.7   # обычные страны: от 0.7 до 1.3 среднего (никого не обделяем)
+const FACTORY_MAX_RATIO := 1.3
+const MEGA_MIN_RATIO := 2.4      # мегастраны (1-2 штуки): от 2.4 до 3.0 среднего
+const MEGA_MAX_RATIO := 3.0
+const CITY_K := 1.0              # городов ≈ CITY_K * sqrt(плиток страны), но не больше числа заводов
+
 
 static func build_land(world: World, mask: Image) -> void:
 	world.setup_size(float(mask.get_width()), float(mask.get_height()), HEX_R)
@@ -35,6 +43,7 @@ static func build_land(world: World, mask: Image) -> void:
 		if votes >= MIN_LAND_VOTES:
 			world.land[i] = 1
 	_find_landmasses(world)
+	_compute_sea_dist(world)
 
 
 static func _is_land(mask: Image, x: float, y: float, w: int, h: int) -> bool:
@@ -43,6 +52,25 @@ static func _is_land(mask: Image, x: float, y: float, w: int, h: int) -> bool:
 	if px < 0 or py < 0 or px >= w or py >= h:
 		return false
 	return mask.get_pixel(px, py).r < 0.5   # тёмное = суша
+
+
+## Для каждой морской плитки считает расстояние до ближайшей суши (суша = 0).
+static func _compute_sea_dist(world: World) -> void:
+	world.sea_dist.fill(-1)
+	var queue: Array = []
+	for i in world.tile_total():
+		if world.land[i] == 1:
+			world.sea_dist[i] = 0
+			queue.append(i)
+	var head := 0
+	while head < queue.size():
+		var cur: int = queue[head]
+		head += 1
+		for d in 6:
+			var nb := world.neighbor(cur, d)
+			if nb >= 0 and world.sea_dist[nb] == -1:
+				world.sea_dist[nb] = world.sea_dist[cur] + 1
+				queue.append(nb)
 
 
 ## Находит связные массивы суши, удаляет совсем мелкие островки.
@@ -83,6 +111,8 @@ static func assign_countries(world: World, seed_value: int) -> void:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = seed_value
 	world.tile_owner.fill(-1)
+	world.tile_city.fill(0)
+	world.tile_factories.fill(0)
 	world.countries = []
 
 	var big: Array = []
@@ -117,6 +147,9 @@ static func assign_countries(world: World, seed_value: int) -> void:
 			"seed": t,
 			"capital": t,
 			"tiles": 0,
+			"factories": 0,
+			"cities": 0,
+			"mega": false,
 		})
 
 	# 2) рост стран от зёрен (рваные границы)
@@ -127,6 +160,10 @@ static func assign_countries(world: World, seed_value: int) -> void:
 
 	# 4) статистика и столицы
 	_finalize(world)
+
+	# 5) стартовые заводы (случайно; 1-2 мегастраны) и города с заводами
+	_assign_factories(world, rng)
+	_place_cities(world, rng)
 
 
 static func _place_seeds(world: World, comp: PackedInt32Array, k: int, rng: RandomNumberGenerator) -> Array:
@@ -268,3 +305,93 @@ static func _country_color(cid: int) -> Color:
 	var sat := 0.45 + 0.15 * float(cid % 3)
 	var val := 0.78 + 0.10 * float(cid % 2)
 	return Color.from_hsv(hue, sat, val)
+
+
+## Стартовое число заводов. У всех случайно около среднего (0.7–1.3),
+## а у одной-двух "мегастран" (из более крупной половины по размеру) — в 2.4–3 раза выше.
+static func _assign_factories(world: World, rng: RandomNumberGenerator) -> void:
+	var cnt := world.countries.size()
+	if cnt == 0:
+		return
+	var order: Array = []
+	for cid in cnt:
+		order.append(cid)
+	order.sort_custom(func(a, b): return int(world.countries[a]["tiles"]) > int(world.countries[b]["tiles"]))
+	var pool_size := maxi(1, int(float(cnt) * 0.5))
+	var pool: Array = order.slice(0, pool_size)
+	var mega_count := mini(1 + rng.randi_range(0, 1), pool_size)
+	var mega: Array = []
+	while mega.size() < mega_count:
+		var pick: int = pool[rng.randi_range(0, pool.size() - 1)]
+		if not mega.has(pick):
+			mega.append(pick)
+	for cid in cnt:
+		var is_mega: bool = mega.has(cid)
+		var ratio := 1.0
+		if is_mega:
+			ratio = rng.randf_range(MEGA_MIN_RATIO, MEGA_MAX_RATIO)
+		else:
+			ratio = rng.randf_range(FACTORY_MIN_RATIO, FACTORY_MAX_RATIO)
+		world.countries[cid]["factories"] = maxi(1, int(round(AVG_FACTORIES * ratio)))
+		world.countries[cid]["mega"] = is_mega
+
+
+## Расставляет города (далеко друг от друга) и раскладывает заводы страны по ним.
+## Столица всегда город; в городе минимум один завод.
+static func _place_cities(world: World, rng: RandomNumberGenerator) -> void:
+	world.tile_city.fill(0)
+	world.tile_factories.fill(0)
+	var by_country: Array = []
+	for c in world.countries.size():
+		by_country.append([])
+	for i in world.tile_total():
+		if world.land[i] == 1 and world.tile_owner[i] >= 0:
+			by_country[world.tile_owner[i]].append(i)
+
+	for cid in world.countries.size():
+		var tiles: Array = by_country[cid]
+		if tiles.is_empty():
+			continue
+		var fc: int = world.countries[cid]["factories"]
+		var cap_by_tiles := maxi(1, int(float(tiles.size()) * 0.5))
+		var want := clampi(int(round(CITY_K * sqrt(float(tiles.size())))), 1, mini(fc, cap_by_tiles))
+		var capital: int = world.countries[cid]["capital"]
+		var cities: Array = [capital]
+		world.tile_city[capital] = 2
+
+		var min_d: Array = []
+		var cap_pos := world.center_of(capital)
+		for t in tiles:
+			min_d.append(world.center_of(int(t)).distance_squared_to(cap_pos))
+		while cities.size() < want:
+			var maxv := 0.0
+			for k in tiles.size():
+				if float(min_d[k]) > maxv:
+					maxv = float(min_d[k])
+			if maxv <= 0.0:
+				break
+			var cands: Array = []
+			for k in tiles.size():
+				if float(min_d[k]) >= maxv * 0.7:
+					cands.append(k)
+			var pick: int = cands[rng.randi_range(0, cands.size() - 1)]
+			var tp: int = tiles[pick]
+			cities.append(tp)
+			world.tile_city[tp] = 1
+			var pp := world.center_of(tp)
+			for k in tiles.size():
+				var d := world.center_of(int(tiles[k])).distance_squared_to(pp)
+				if d < float(min_d[k]):
+					min_d[k] = d
+
+		# по одному заводу в каждый город, остальные случайно (в столице шанс вдвое выше)
+		var lottery: Array = []
+		for t in cities:
+			lottery.append(t)
+		lottery.append(capital)
+		for t in cities:
+			world.tile_factories[int(t)] = 1
+		for f in range(cities.size(), fc):
+			var tt: int = lottery[rng.randi_range(0, lottery.size() - 1)]
+			world.tile_factories[tt] = mini(255, world.tile_factories[tt] + 1)
+		world.countries[cid]["cities"] = cities.size()

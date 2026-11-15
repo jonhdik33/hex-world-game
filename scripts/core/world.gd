@@ -32,6 +32,9 @@ var landmass := PackedInt32Array()     # номер массива суши (м�
 var masses: Array = []                 # список массивов суши; каждый = PackedInt32Array плиток
 var countries: Array = []              # [{id, name, color, seed, capital, tiles}]
 var land_count: int = 0
+var sea_dist := PackedInt32Array()     # суша = 0; море = расстояние до ближайшей суши (1 = у берега)
+var tile_city := PackedByteArray()     # 0 = обычная плитка, 1 = город, 2 = столица
+var tile_factories := PackedByteArray() # число заводов на плитке (только города)
 
 
 func setup_size(px_w: float, px_h: float, r: float) -> void:
@@ -47,6 +50,12 @@ func setup_size(px_w: float, px_h: float, r: float) -> void:
 	tile_owner.fill(-1)
 	landmass.resize(n)
 	landmass.fill(-1)
+	sea_dist.resize(n)
+	sea_dist.fill(-1)
+	tile_city.resize(n)
+	tile_city.fill(0)
+	tile_factories.resize(n)
+	tile_factories.fill(0)
 	masses = []
 	countries = []
 	land_count = 0
@@ -58,6 +67,11 @@ func hex_w() -> float:
 
 func tile_total() -> int:
 	return cols * rows
+
+
+## Границы игрового мира (вся сетка, включая море). Камера и флот не выходят за них.
+func bounds() -> Rect2:
+	return Rect2(0.0, 0.0, hex_w() * (float(cols) + 0.5), hex_r * 1.5 * float(rows - 1) + hex_r * 2.0)
 
 
 @warning_ignore("integer_division")
