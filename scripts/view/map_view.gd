@@ -28,7 +28,6 @@ var _mid := PackedVector2Array()     # середины береговых ст�
 var _mid_ok := PackedByteArray()     # 1 = у стороны k есть середина (она береговая)
 var _poly: Array = []                # готовый многоугольник каждой плитки суши
 var _construction: Array = []        # плитки со стройкой (жёлтое кольцо)
-var _army := PackedInt32Array()      # дивизий на плитках (значок с числом)
 
 
 func setup(w: World) -> void:
@@ -51,11 +50,6 @@ func setup(w: World) -> void:
 
 
 func refresh() -> void:
-	queue_redraw()
-
-
-func set_army(a: PackedInt32Array) -> void:
-	_army = a
 	queue_redraw()
 
 
@@ -323,24 +317,6 @@ func _draw() -> void:
 		else:
 			draw_circle(cc, world.hex_r * 0.40, Color(0.05, 0.05, 0.1, 0.9))
 			draw_circle(cc, world.hex_r * 0.28, Color(0.95, 0.95, 0.95, 1))
-
-	# армия: небольшой значок с числом дивизий под центром плитки
-	if _army.size() == world.tile_total():
-		var font := ThemeDB.fallback_font
-		var fs := int(world.hex_r * 0.75)
-		for i in world.tile_total():
-			if _army[i] <= 0 or world.land[i] == 0:
-				continue
-			var ac := world.center_of(i) + Vector2(0.0, world.hex_r * 0.55)
-			var mine_a := world.tile_owner[i] == player_country
-			var bw := world.hex_r * 1.05
-			var bh := world.hex_r * 0.8
-			var rect := Rect2(ac - Vector2(bw * 0.5, bh * 0.5), Vector2(bw, bh))
-			var bg := Color(0.05, 0.05, 0.1, 0.85)
-			if mine_a:
-				bg = Color(0.1, 0.35, 0.15, 0.95)
-			draw_rect(rect, bg)
-			draw_string(font, Vector2(rect.position.x, rect.position.y + bh * 0.82), str(_army[i]), HORIZONTAL_ALIGNMENT_CENTER, bw, fs, Color(1, 1, 1))
 
 	# стройки — жёлтые кольца
 	for t in _construction:
