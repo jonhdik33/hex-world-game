@@ -9,6 +9,7 @@ extends RefCounted
 ## достраивается через BUILD_DAYS дней. Боты пока ничего не строят (модуль 5).
 
 const World = preload("res://scripts/core/world.gd")
+const BotAI = preload("res://scripts/core/bot_ai.gd")
 
 const DAYS_PER_YEAR := 360
 const POP_PER_TILE := 30000.0         # людей на плитку при старте
@@ -31,6 +32,11 @@ const RECOVER_DAYS := 3               # дней отдыха после боя
 const ST_IDLE := 0
 const ST_MOVE := 1
 const ST_FIGHT := 2
+const MAX_HP := 100.0               # полная сила дивизии
+const HEAL_PER_DAY := 5.0            # лечение в день
+const DEFENSE_BONUS := 1.15          # защитник на своей земле сильнее
+const WAIT_REROUTE := 3.0            # через сколько секунд ожидания искать обход
+const BOT_PERIOD := 3                # раз в сколько дней думает бот
 
 # стройка
 const FACTORY_COST := 4000.0          # цена первого достраиваемого завода (в городе с 1 заводом)
@@ -44,8 +50,11 @@ var player: int = -1          # id страны игрока, -1 = ещё не �
 var money: Array = []         # казна каждой страны (float)
 var population: Array = []    # население каждой страны (float)
 var army: Array = []          # дивизий у каждой страны (int), всегда = сумма по плиткам
-var tile_army := PackedInt32Array()   # дивизий на каждой плитке (считается из отрядов)
-var squads: Array = []        # отряды (см. раздел «армия»)
+var tile_army := PackedInt32Array()   # 1 = на плитке стоит дивизия
+var squads: Array = []        # все дивизии (см. раздел «армия»)
+var unit_on: Dictionary = {}  # плитка -> дивизия
+var rng := RandomNumberGenerator.new()
+var bot_aggr: Array = []      # агрессивность бота 0..1
 var at_war: Dictionary = {}   # пары стран в состоянии войны: min*1000+max
 var _next_id: int = 1
 var build_queue: Array = []   # стройки: [{cid, tile, days_left, new_city}]
@@ -74,6 +83,10 @@ func reset() -> void:
 		money.append(0.0)
 	for cid in world.countries.size():
 		money[cid] = maxf(0.0, daily_net(cid)) * START_MONEY_DAYS
+	rng.seed = 424242
+	bot_aggr = []
+	for c in world.countries.size():
+		bot_aggr.append(rng.randf_range(0.2, 1.0))
 	_place_armies()
 
 
@@ -119,21 +132,25 @@ func tick_day() -> void:
 		var e: Dictionary = sq
 		if int(e["recover"]) > 0:
 			e["recover"] = int(e["recover"]) - 1
+		e["hp"] = minf(MAX_HP, float(e["hp"]) + HEAL_PER_DAY)
 	_progress_builds()
-	_merge_idle()
-	_rebuild()
+	for cid in world.countries.size():
+		if cid != player and (day + cid) % BOT_PERIOD == 0:
+			BotAI.think(self, cid, float(bot_aggr[cid]))
 	day += 1
 
 
 # ---------- армия ----------
-## Отряд (squad) = группа дивизий, идущих вместе. Поля: id, owner, tile, count, path (плитки впереди),
-## p (прогресс шага 0..1), crossed (середина шага пройдена), state, recover (дней отдыха), fight_t.
-## Шаг на соседнюю плитку занимает STEP_SECONDS; на середине отряд «переходит» на неё.
-## Если там враг (с кем война) — бой BATTLE_SECONDS; проигравшие уничтожаются,
-## победители получают отдых RECOVER_DAYS и затем идут дальше по маршруту.
+## Одна плитка = максимум одна дивизия. Дивизия (словарь): id, owner, tile, from, hp, path (плитки впереди),
+## dest (цель похода), p (прогресс шага 0..1), crossed (граница пройдена, для захвата), state,
+## recover (дней отдыха), fight_t, wait_t.
+## Шаг на соседнюю плитку = STEP_SECONDS: стрелка тянется от центра плитки к центру следующей, а дивизия
+## появляется на новой плитке, когда стрелка дошла (p = 1). Если там враг (война) — на середине (p = 0.5)
+## бой BATTLE_SECONDS: проигравший уничтожен, победитель ранен, отдыхает RECOVER_DAYS и идёт дальше.
 
 func _place_armies() -> void:
 	squads = []
+	unit_on = {}
 	_next_id = 1
 	at_war = {}
 	var by_country: Array = []
@@ -144,115 +161,90 @@ func _place_armies() -> void:
 			by_country[world.tile_owner[i]].append(i)
 	for cid in world.countries.size():
 		var tiles: Array = by_country[cid]
-		var n: int = army[cid]
+		var n: int = mini(int(army[cid]), tiles.size())
 		if tiles.is_empty() or n <= 0:
-			army[cid] = 0
 			continue
 		var cn: Dictionary = world.countries[cid]
 		var cap: int = cn["capital"]
-		_add_squad(cid, cap, 1)
+		_add_unit(cid, cap)
 		var step := maxi(1, int(float(tiles.size()) / float(maxi(1, n))))
-		for k in range(1, n):
-			_add_squad(cid, tiles[(k * step) % tiles.size()], 1)
-	_merge_idle()
+		var idx := step
+		var placed := 1
+		var guard := 0
+		while placed < n and guard < tiles.size() * 2:
+			var t: int = tiles[idx % tiles.size()]
+			idx += 1
+			guard += 1
+			if unit_on.has(t):
+				continue
+			_add_unit(cid, t)
+			placed += 1
+			idx += step - 1
 	_rebuild()
 
 
-func _add_squad(cid: int, t: int, count: int) -> Dictionary:
-	var sq := {
-		"id": _next_id, "owner": cid, "tile": t, "from": t, "count": count, "path": [],
-		"p": 0.0, "crossed": false, "state": ST_IDLE, "recover": 0, "fight_t": 0.0,
+func _add_unit(cid: int, t: int) -> Dictionary:
+	var e := {
+		"id": _next_id, "owner": cid, "tile": t, "from": t, "hp": MAX_HP, "path": [], "dest": -1,
+		"p": 0.0, "crossed": false, "state": ST_IDLE, "recover": 0, "fight_t": 0.0, "wait_t": 0.0,
 	}
 	_next_id += 1
-	squads.append(sq)
-	return sq
+	squads.append(e)
+	unit_on[t] = e
+	return e
 
 
-## Пересчёт дивизий на плитках и по странам из списка отрядов.
+## Пересчёт занятых плиток и числа дивизий по странам.
 func _rebuild() -> void:
 	tile_army = PackedInt32Array()
 	tile_army.resize(world.tile_total())
 	tile_army.fill(0)
+	unit_on = {}
 	for c in army.size():
 		army[c] = 0
 	for sq in squads:
 		var e: Dictionary = sq
-		tile_army[int(e["tile"])] += int(e["count"])
-		army[int(e["owner"])] = int(army[int(e["owner"])]) + int(e["count"])
-
-
-## Стоящие и отдохнувшие отряды одной страны на одной плитке сливаем в один.
-func _merge_idle() -> void:
-	var first := {}
-	var keep: Array = []
-	for sq in squads:
-		var e: Dictionary = sq
-		if int(e["state"]) == ST_IDLE and int(e["recover"]) <= 0:
-			var key: int = int(e["tile"]) * 1000 + int(e["owner"])
-			if first.has(key):
-				var f: Dictionary = first[key]
-				f["count"] = int(f["count"]) + int(e["count"])
-				continue
-			first[key] = e
-		keep.append(e)
-	squads = keep
+		tile_army[int(e["tile"])] = 1
+		unit_on[int(e["tile"])] = e
+		army[int(e["owner"])] = int(army[int(e["owner"])]) + 1
 
 
 func army_on(t: int) -> int:
 	return tile_army[t]
 
 
-func _squads_at(cid: int, t: int, st: int) -> Array:
-	var out: Array = []
-	for sq in squads:
-		var e: Dictionary = sq
-		if int(e["tile"]) == t and int(e["owner"]) == cid and int(e["state"]) == st:
-			out.append(e)
-	return out
+## Дивизия на плитке (пустой словарь, если нет).
+func unit_at(t: int) -> Dictionary:
+	if unit_on.has(t):
+		var e: Dictionary = unit_on[t]
+		return e
+	return {}
 
 
-## Дивизий на плитке, готовых получить приказ (стоят и отдохнули).
-func idle_count(cid: int, t: int) -> int:
-	var n := 0
-	for sq in _squads_at(cid, t, ST_IDLE):
-		var e: Dictionary = sq
-		if int(e["recover"]) <= 0:
-			n += int(e["count"])
-	return n
+func division_upkeep() -> float:
+	return DIVISION_UPKEEP
 
 
-func resting_count(cid: int, t: int) -> int:
-	var n := 0
-	for sq in squads:
-		var e: Dictionary = sq
-		if int(e["tile"]) == t and int(e["owner"]) == cid and int(e["recover"]) > 0:
-			n += int(e["count"])
-	return n
-
-
-func marching_count(cid: int, t: int) -> int:
-	var n := 0
-	for sq in squads:
-		var e: Dictionary = sq
-		if int(e["tile"]) == t and int(e["owner"]) == cid and int(e["state"]) != ST_IDLE:
-			n += int(e["count"])
-	return n
+func _remove_unit(e: Dictionary) -> void:
+	squads.erase(e)
+	if unit_on.has(int(e["tile"])):
+		var cur: Dictionary = unit_on[int(e["tile"])]
+		if int(cur["id"]) == int(e["id"]):
+			unit_on.erase(int(e["tile"]))
+	tile_army[int(e["tile"])] = 0
+	army[int(e["owner"])] = maxi(0, int(army[int(e["owner"])]) - 1)
 
 
 func _remove_one_division(cid: int) -> void:
-	var best: Dictionary = {}
+	var worst: Dictionary = {}
 	for sq in squads:
 		var e: Dictionary = sq
 		if int(e["owner"]) != cid:
 			continue
-		if best.is_empty() or int(e["count"]) > int(best["count"]):
-			best = e
-	if best.is_empty():
-		return
-	best["count"] = int(best["count"]) - 1
-	if int(best["count"]) <= 0:
-		squads.erase(best)
-	_rebuild()
+		if worst.is_empty() or float(e["hp"]) < float(worst["hp"]):
+			worst = e
+	if not worst.is_empty():
+		_remove_unit(worst)
 
 
 func recruit_block_reason(cid: int, t: int) -> String:
@@ -260,6 +252,8 @@ func recruit_block_reason(cid: int, t: int) -> String:
 		return "Не ваша территория"
 	if world.tile_city[t] == 0:
 		return "Нанимать можно только в городе"
+	if unit_on.has(t):
+		return "Клетка занята дивизией"
 	if float(money[cid]) < RECRUIT_COST:
 		return "Не хватает денег"
 	return ""
@@ -269,21 +263,17 @@ func recruit(cid: int, t: int) -> bool:
 	if recruit_block_reason(cid, t) != "":
 		return false
 	money[cid] = float(money[cid]) - RECRUIT_COST
-	_add_squad(cid, t, 1)
-	_merge_idle()
+	_add_unit(cid, t)
 	_rebuild()
 	return true
 
 
 func disband(cid: int, t: int) -> bool:
-	for sq in _squads_at(cid, t, ST_IDLE):
-		var e: Dictionary = sq
-		e["count"] = int(e["count"]) - 1
-		if int(e["count"]) <= 0:
-			squads.erase(e)
-		_rebuild()
-		return true
-	return false
+	var e := unit_at(t)
+	if e.is_empty() or int(e["owner"]) != cid or int(e["state"]) != ST_IDLE:
+		return false
+	_remove_unit(e)
+	return true
 
 
 func is_adjacent(a: int, b: int) -> bool:
@@ -304,7 +294,7 @@ func declare_war(a: int, b: int) -> void:
 		at_war[mini(a, b) * 1000 + maxi(a, b)] = true
 
 
-## Можно ли отряду страны cid войти на плитку t: своя или страна, с которой война.
+## Можно ли дивизии страны cid войти на плитку t: своя или страна, с которой война.
 func can_enter(cid: int, t: int) -> bool:
 	if t < 0 or world.land[t] == 0:
 		return false
@@ -312,7 +302,7 @@ func can_enter(cid: int, t: int) -> bool:
 	return o == cid or (o >= 0 and is_at_war(cid, o))
 
 
-## Кратчайший маршрут (список плиток без стартовой) по доступным плиткам; пусто = пути нет.
+## Кратчайший маршрут (плитки без стартовой); пусто = пути нет. Свои дивизии на пути обходятся.
 func find_path(cid: int, from: int, to: int) -> Array:
 	if from == to or not can_enter(cid, to):
 		return []
@@ -329,6 +319,8 @@ func find_path(cid: int, from: int, to: int) -> Array:
 			var nb := world.neighbor(cur, k)
 			if nb < 0 or prev.has(nb) or not can_enter(cid, nb):
 				continue
+			if unit_on.has(nb) and world.tile_owner[nb] == cid:
+				continue   # своя дивизия занимает плитку: обходим
 			prev[nb] = cur
 			queue.append(nb)
 	if not prev.has(to):
@@ -341,63 +333,65 @@ func find_path(cid: int, from: int, to: int) -> Array:
 	return path
 
 
-## Приказ: отряд(ы) с плитки from идут на плитку to. {"ok": bool, "msg": String}
-func order_move(cid: int, from: int, to: int, all: bool) -> Dictionary:
-	if world.land[to] == 0:
+## Приказ дивизии на плитке from идти на плитку to. {"ok": bool, "msg": String}
+func order_move(cid: int, from: int, to: int) -> Dictionary:
+	if to < 0 or world.land[to] == 0:
 		return {"ok": false, "msg": "Туда нельзя"}
 	var owner_to: int = world.tile_owner[to]
 	if owner_to != cid and not is_at_war(cid, owner_to):
 		return {"ok": false, "msg": "Нужна война: нажмите на чужую плитку и «Объявить войну»"}
 	if from == to:
 		return {"ok": false, "msg": "Это та же плитка"}
+	var e := unit_at(from)
+	if e.is_empty() or int(e["owner"]) != cid:
+		return {"ok": false, "msg": "Тут нет вашей дивизии"}
+	if int(e["state"]) != ST_IDLE or int(e["recover"]) > 0:
+		return {"ok": false, "msg": "Дивизия отдыхает или уже в походе"}
+	if owner_to == cid and unit_on.has(to):
+		return {"ok": false, "msg": "Эта плитка занята вашей дивизией"}
 	var path := find_path(cid, from, to)
 	if path.is_empty():
 		return {"ok": false, "msg": "Пути нет"}
-	var ready: Array = []
-	for sq in _squads_at(cid, from, ST_IDLE):
-		var e: Dictionary = sq
-		if int(e["recover"]) <= 0:
-			ready.append(e)
-	if ready.is_empty():
-		return {"ok": false, "msg": "Дивизии отдыхают или уже в походе"}
-	var go: Dictionary = ready[0]
-	if all:
-		for k in range(1, ready.size()):
-			var o: Dictionary = ready[k]
-			go["count"] = int(go["count"]) + int(o["count"])
-			squads.erase(o)
-	elif int(go["count"]) > 1:
-		go["count"] = int(go["count"]) - 1
-		go = _add_squad(cid, from, 1)
-	go["path"] = path
-	go["state"] = ST_MOVE
-	go["p"] = 0.0
-	go["crossed"] = false
-	_rebuild()
-	return {"ok": true, "msg": "Выступили: %d див., путь %d плиток" % [int(go["count"]), path.size()]}
+	e["path"] = path
+	e["dest"] = to
+	e["state"] = ST_MOVE
+	e["p"] = 0.0
+	e["crossed"] = false
+	e["wait_t"] = 0.0
+	return {"ok": true, "msg": "Дивизия выступила, путь: %d плиток" % path.size()}
 
 
-## Остановить походы отрядов страны на плитке.
+## Остановить поход дивизии на плитке (если граница уже пройдена — дойдёт до конца шага).
 func stop_marching(cid: int, t: int) -> void:
-	for sq in squads:
-		var e: Dictionary = sq
-		if int(e["tile"]) == t and int(e["owner"]) == cid and int(e["state"]) == ST_MOVE:
-			e["path"] = []
-			e["state"] = ST_IDLE
-			e["p"] = 0.0
-			e["crossed"] = false
-	_merge_idle()
+	var e := unit_at(t)
+	if e.is_empty() or int(e["owner"]) != cid or int(e["state"]) != ST_MOVE:
+		return
+	var path: Array = e["path"]
+	if bool(e["crossed"]) and not path.is_empty():
+		e["path"] = [path[0]]
+		e["dest"] = path[0]
+		return
+	e["path"] = []
+	e["dest"] = -1
+	e["state"] = ST_IDLE
+	e["p"] = 0.0
+
+
+func _stop(e: Dictionary) -> void:
+	e["path"] = []
+	e["dest"] = -1
+	e["state"] = ST_IDLE
+	e["p"] = 0.0
+	e["crossed"] = false
+	e["wait_t"] = 0.0
 
 
 ## Время идёт: dt — игровые секунды (реальные секунды × скорость).
 func advance(dt: float) -> void:
 	if squads.is_empty() or dt <= 0.0:
 		return
-	var changed := false
 	for sq in squads.duplicate():
 		var e: Dictionary = sq
-		if not squads.has(e):
-			continue
 		var st: int = e["state"]
 		if st == ST_IDLE or int(e["recover"]) > 0:
 			continue
@@ -405,52 +399,66 @@ func advance(dt: float) -> void:
 			e["fight_t"] = float(e["fight_t"]) + dt
 			if float(e["fight_t"]) >= BATTLE_SECONDS:
 				_resolve_battle(e)
-				changed = true
 			continue
-		# ST_MOVE
-		var path: Array = e["path"]
-		if path.is_empty():
-			e["state"] = ST_IDLE
-			changed = true
-			continue
-		var nxt: int = path[0]
-		if not can_enter(int(e["owner"]), nxt):
-			e["path"] = []
-			e["state"] = ST_IDLE
-			e["p"] = 0.0
-			e["crossed"] = false
-			changed = true
-			continue
-		if not bool(e["crossed"]):
-			e["from"] = e["tile"]
-		e["p"] = float(e["p"]) + dt / STEP_SECONDS
-		if float(e["p"]) >= 0.5 and not bool(e["crossed"]):
-			var tile_owner_now: int = world.tile_owner[nxt]
-			if tile_owner_now == int(e["owner"]):
-				e["tile"] = nxt
-				e["crossed"] = true
-				changed = true
-			elif tile_army[nxt] == 0:
-				e["tile"] = nxt
-				e["crossed"] = true
-				_capture(int(e["owner"]), tile_owner_now, nxt)
-				changed = true
-			else:
-				e["p"] = 0.5
-				e["state"] = ST_FIGHT
-				e["fight_t"] = 0.0
-				continue
-		if float(e["p"]) >= 1.0:
-			path.pop_front()
-			e["path"] = path
-			e["p"] = 0.0
-			e["crossed"] = false
-			if path.is_empty():
-				e["state"] = ST_IDLE
-				changed = true
-	if changed:
-		_merge_idle()
-		_rebuild()
+		_advance_move(e, dt)
+
+
+func _advance_move(e: Dictionary, dt: float) -> void:
+	var path: Array = e["path"]
+	if path.is_empty():
+		_stop(e)
+		return
+	var cid: int = e["owner"]
+	var nxt: int = path[0]
+	if not can_enter(cid, nxt):
+		_stop(e)
+		return
+	var hostile: bool = world.tile_owner[nxt] != cid and not bool(e["crossed"])
+	var p: float = float(e["p"]) + dt / STEP_SECONDS
+	if hostile and p >= 0.5:
+		e["p"] = 0.5
+		if unit_on.has(nxt):
+			e["state"] = ST_FIGHT
+			e["fight_t"] = 0.0
+		else:
+			_capture(cid, world.tile_owner[nxt], nxt)
+			e["crossed"] = true
+		return
+	e["p"] = minf(p, 1.0)
+	if p < 1.0:
+		return
+	# стрелка дошла до центра следующей плитки: дивизия переходит на неё
+	if unit_on.has(nxt):
+		# занято своей дивизией: ждём, потом ищем обход
+		e["wait_t"] = float(e["wait_t"]) + dt
+		if float(e["wait_t"]) > WAIT_REROUTE:
+			e["wait_t"] = 0.0
+			_reroute(e)
+		return
+	unit_on.erase(int(e["tile"]))
+	tile_army[int(e["tile"])] = 0
+	e["tile"] = nxt
+	e["from"] = nxt
+	unit_on[nxt] = e
+	tile_army[nxt] = 1
+	path.pop_front()
+	e["path"] = path
+	e["p"] = 0.0
+	e["crossed"] = false
+	e["wait_t"] = 0.0
+	if path.is_empty():
+		_stop(e)
+
+
+func _reroute(e: Dictionary) -> void:
+	var dest: int = e["dest"]
+	var np := find_path(int(e["owner"]), int(e["tile"]), dest)
+	if np.is_empty() or unit_on.has(dest):
+		_stop(e)
+		return
+	e["path"] = np
+	e["p"] = 0.0
+	e["crossed"] = false
 
 
 func _resolve_battle(e: Dictionary) -> void:
@@ -458,43 +466,28 @@ func _resolve_battle(e: Dictionary) -> void:
 	var target: int = path[0]
 	var att: int = e["owner"]
 	var def: int = world.tile_owner[target]
-	var n: int = e["count"]
-	var d: int = tile_army[target]
-	if n > d:
-		# победа: защитники уничтожены, остаток отряда занимает плитку и отдыхает
-		var keep: Array = []
-		for sq in squads:
-			var o: Dictionary = sq
-			if not (int(o["tile"]) == target and int(o["owner"]) == def):
-				keep.append(o)
-		squads = keep
-		e["count"] = n - d
-		e["tile"] = target
+	var d := unit_at(target)
+	e["state"] = ST_MOVE
+	if d.is_empty():
+		_capture(att, def, target)
 		e["crossed"] = true
-		e["state"] = ST_MOVE
+		return
+	var a_pow := float(e["hp"]) * rng.randf_range(0.8, 1.2)
+	var d_pow := float(d["hp"]) * rng.randf_range(0.8, 1.2) * DEFENSE_BONUS
+	if a_pow > d_pow:
+		# победа: защитник уничтожен, победитель ранен и отдыхает, плитка захвачена
+		_remove_unit(d)
+		e["hp"] = maxf(10.0, float(e["hp"]) - float(d["hp"]) * 0.35)
 		e["recover"] = RECOVER_DAYS
+		e["crossed"] = true
 		_capture(att, def, target)
 		_note(att, def, "Плитка захвачена")
 	else:
-		# поражение или ничья: отряд уничтожен, защитники теряют столько же и отдыхают
-		squads.erase(e)
-		var left := n
-		for sq in _squads_at(def, target, ST_IDLE) + _squads_at(def, target, ST_MOVE):
-			var o: Dictionary = sq
-			if left <= 0:
-				break
-			var take := mini(left, int(o["count"]))
-			o["count"] = int(o["count"]) - take
-			left -= take
-			o["recover"] = RECOVER_DAYS
-		var alive: Array = []
-		for sq in squads:
-			var o2: Dictionary = sq
-			if int(o2["count"]) > 0:
-				alive.append(o2)
-		squads = alive
+		# поражение (при равенстве выигрывает защитник): атакующий уничтожен
+		d["hp"] = maxf(10.0, float(d["hp"]) - float(e["hp"]) * 0.35)
+		d["recover"] = RECOVER_DAYS
+		_remove_unit(e)
 		_note(att, def, "Атака отбита")
-	_rebuild()
 
 
 func _note(att: int, def: int, text: String) -> void:
@@ -529,15 +522,18 @@ func _capture(att: int, def: int, t: int) -> void:
 	build_queue = left
 	map_dirty = true
 	if int(dd["tiles"]) <= 0:
-		# страна уничтожена: её отряды исчезают
+		# страна уничтожена: её дивизии исчезают
 		var rest: Array = []
 		for sq in squads:
 			var o: Dictionary = sq
 			if int(o["owner"]) != def:
 				rest.append(o)
 		squads = rest
+		_rebuild()
 		if def == player:
 			events.append("Ваша страна потеряла все земли")
+		else:
+			events.append("Страна уничтожена: %s" % dd["name"])
 
 
 # ---------- стройка ----------

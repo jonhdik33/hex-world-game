@@ -31,7 +31,6 @@ var _accum: float = 0.0
 var _picked: int = -1
 var _sel_land: int = -1
 var _move_from: int = -1      # режим «двигать»: откуда
-var _move_all: bool = true    # режим «двигать»: все дивизии или одна
 
 
 func _ready() -> void:
@@ -184,9 +183,8 @@ func _on_action(id: String) -> void:
 		if state.disband(cid, t):
 			hud.show_event("Дивизия распущена")
 			units.refresh()
-	elif id == "move_all" or id == "move_one":
+	elif id == "move":
 		_move_from = t
-		_move_all = id == "move_all"
 		hud.show_event("Нажмите на плитку-цель (маршрут проложится сам)")
 		return
 	elif id == "stop":
@@ -207,7 +205,7 @@ func _on_action(id: String) -> void:
 func _try_move(to: int) -> bool:
 	var from := _move_from
 	_move_from = -1
-	var res: Dictionary = state.order_move(state.player, from, to, _move_all)
+	var res: Dictionary = state.order_move(state.player, from, to)
 	hud.show_event(res["msg"])
 	units.refresh()
 	_refresh_hud()
@@ -307,10 +305,12 @@ func _show_land_info(t: int) -> void:
 		lines.append("Земля")
 	lines.append("Плитка: %d, %d" % [world.col_of(t), world.row_of(t)])
 	if playing and state.army_on(t) > 0:
-		var info := "Дивизий здесь: %d" % state.army_on(t)
-		var rest := state.resting_count(world.tile_owner[t], t)
-		if rest > 0:
-			info += " (отдыхают: %d)" % rest
+		var u: Dictionary = state.unit_at(t)
+		var info := "Дивизия: сила %d%%" % int(round(float(u["hp"])))
+		if int(u["recover"]) > 0:
+			info += ", отдыхает %d дн." % int(u["recover"])
+		elif int(u["state"]) != GameState.ST_IDLE:
+			info += ", в походе"
 		lines.append(info)
 	if playing and cid >= 0 and cid != state.player and state.is_at_war(state.player, cid):
 		lines.append("С этой страной война")
@@ -349,17 +349,15 @@ func _update_actions(t: int) -> void:
 		if r2 == "Не хватает денег":
 			l2 += " — нет денег"
 		list.append({"id": "recruit", "text": l2, "enabled": r2 == ""})
-	var ready := state.idle_count(cid, t)
-	if ready > 0:
-		list.append({"id": "move_all", "text": "Отправить все дивизии (%d)" % ready, "enabled": true})
-		if ready > 1:
-			list.append({"id": "move_one", "text": "Отправить одну дивизию", "enabled": true})
-	elif state.marching_count(cid, t) > 0:
-		list.append({"id": "stop", "text": "Остановить поход", "enabled": true})
-	elif state.resting_count(cid, t) > 0:
-		list.append({"id": "none", "text": "Дивизии отдыхают после боя", "enabled": false})
-	if ready > 0 and list.size() < 5:
-		list.append({"id": "disband", "text": "Распустить одну дивизию", "enabled": true})
+	var u := state.unit_at(t)
+	if not u.is_empty():
+		if int(u["state"]) == GameState.ST_IDLE and int(u["recover"]) <= 0:
+			list.append({"id": "move", "text": "Отправить дивизию", "enabled": true})
+			list.append({"id": "disband", "text": "Распустить дивизию", "enabled": true})
+		elif int(u["state"]) != GameState.ST_IDLE:
+			list.append({"id": "stop", "text": "Остановить поход", "enabled": true})
+		else:
+			list.append({"id": "none", "text": "Дивизия отдыхает после боя", "enabled": false})
 	hud.set_actions(list)
 
 

@@ -5,6 +5,7 @@ extends Node2D
 ## Данные берёт из World, сам ничего в нём не меняет.
 
 const World = preload("res://scripts/core/world.gd")
+const OutlineView = preload("res://scripts/view/outline_view.gd")
 
 const FRAME_COLOR := Color(0.02, 0.05, 0.11)   # как фон за краем мира
 const SEA_BASE := Color(0.11, 0.31, 0.57)
@@ -21,6 +22,7 @@ const COAST_BULGE_MAX := 0.3     # выступ берега
 var world: World
 var player_country: int = -1
 var _highlight: Line2D
+var _sea_outline: Node2D
 var _off: Array = []             # смещения углов плитки суши от центра
 var _sea_off: Array = []         # смещения углов морской ячейки от центра
 var _cpos := PackedVector2Array()    # углы плиток суши (с учётом берега), индекс i*6+k
@@ -46,6 +48,10 @@ func setup(w: World) -> void:
 	_highlight.z_index = 10
 	_highlight.visible = false
 	add_child(_highlight)
+	_sea_outline = OutlineView.new()
+	_sea_outline.z_index = 10
+	_sea_outline.visible = false
+	add_child(_sea_outline)
 	queue_redraw()
 
 
@@ -94,22 +100,45 @@ func select_land(i: int) -> void:
 	var poly: PackedVector2Array = _poly[i]
 	for p in poly:
 		pts.append(p - c)
+	if _sea_outline != null:
+		_sea_outline.visible = false
 	_show_highlight(pts, c, 3.0)
 
 
+## Выделяет только ту часть морской ячейки, что не закрыта сушей (вместе с линией берега).
 func select_sea(j: int) -> void:
 	if world == null or j < 0:
 		clear_selection()
 		return
-	var pts := PackedVector2Array()
+	_highlight.visible = false
+	var c := world.sea_grid.center_of(j)
+	var hex_pts := PackedVector2Array()
 	for k in 6:
-		pts.append(_sea_off[k])
-	_show_highlight(pts, world.sea_grid.center_of(j), 4.0)
+		hex_pts.append(c + _sea_off[k])
+	var b := world.bounds()
+	var rect_pts := PackedVector2Array([
+		b.position, Vector2(b.end.x, b.position.y), b.end, Vector2(b.position.x, b.end.y)])
+	var pieces: Array = Geometry2D.intersect_polygons(hex_pts, rect_pts)
+	var reach := world.sea_grid.r + world.hex_r * 2.0
+	for i in world.tile_total():
+		if world.land[i] == 0 or pieces.is_empty():
+			continue
+		if world.center_of(i).distance_to(c) > reach:
+			continue
+		var next: Array = []
+		for pc in pieces:
+			var piece: PackedVector2Array = pc
+			var poly: PackedVector2Array = _poly[i]
+			next.append_array(Geometry2D.clip_polygons(piece, poly))
+		pieces = next
+	_sea_outline.set_polys(pieces)
 
 
 func clear_selection() -> void:
 	if _highlight != null:
 		_highlight.visible = false
+	if _sea_outline != null:
+		_sea_outline.visible = false
 
 
 func _show_highlight(pts: PackedVector2Array, pos: Vector2, width: float) -> void:

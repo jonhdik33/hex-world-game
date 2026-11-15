@@ -100,20 +100,21 @@ func _draw() -> void:
 			draw_dashed_line(prev, cur, Color(1, 1, 1, 0.55), 2.0, 5.0)
 			prev = cur
 
-	# солдаты на плитках (число = все дивизии на плитке)
-	for i in world.tile_total():
-		var cnt := state.tile_army[i]
-		if cnt <= 0 or world.land[i] == 0:
-			continue
-		var o: int = world.tile_owner[i]
-		if o < 0:
-			continue
-		var pos := world.center_of(i) + Vector2(-s * 0.15, s * 0.1)
-		var col := _owner_color(o)
-		_soldier(pos, s * 0.9, col)
-		var txt := str(cnt)
-		draw_string(font, pos + Vector2(s * 0.28, s * 0.62), txt, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, Color(0, 0, 0, 0.9))
-		draw_string(font, pos + Vector2(s * 0.26, s * 0.6), txt, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, Color(1, 1, 1))
+	# солдаты (одна дивизия на плитку), полоска силы и значок отдыха
+	for sq in state.squads:
+		var u: Dictionary = sq
+		var o: int = u["owner"]
+		var pos := world.center_of(int(u["tile"])) + Vector2(-s * 0.1, s * 0.05)
+		_soldier(pos, s * 0.9, _owner_color(o))
+		var hp: float = float(u["hp"]) / GameState.MAX_HP
+		var bar := Rect2(pos + Vector2(-s * 0.4, s * 0.55), Vector2(s * 0.8, s * 0.12))
+		draw_rect(bar, Color(0, 0, 0, 0.8))
+		var hc := Color(0.4, 0.9, 0.4)
+		if hp < 0.5:
+			hc = Color(0.95, 0.6, 0.2)
+		draw_rect(Rect2(bar.position, Vector2(bar.size.x * clampf(hp, 0.0, 1.0), bar.size.y)), hc)
+		if int(u["recover"]) > 0:
+			draw_string(font, pos + Vector2(s * 0.3, -s * 0.3), "z", HORIZONTAL_ALIGNMENT_LEFT, -1, fs, Color(1.0, 0.9, 0.3))
 
 	# стрелки походов и бои
 	for sq in state.squads:
