@@ -6,6 +6,7 @@ extends CanvasLayer
 signal confirm_pressed
 signal regen_pressed
 signal speed_selected(speed: int)
+signal menu_toggled(index: int, on: bool)
 signal action_pressed(id: String)
 signal production_changed(percent: int)
 signal research_pressed(branch: int)
@@ -21,8 +22,9 @@ const GameState = preload("res://scripts/core/game_state.gd")
 const FONT := 22
 const SPEED_NAMES: Array = ["Пауза", "x1", "x2", "x3"]
 const ACTION_SLOTS := 7
-const MENU_ICONS: Array = ["balance", "countries", "production", "science", "settings"]
-const MENU_NAMES: Array = ["Баланс", "Страны", "Производство", "Наука", "Настройки"]
+const MENU_ICONS: Array = ["balance", "countries", "production", "science", "settings", "ports"]
+const MENU_NAMES: Array = ["Баланс", "Страны", "Производство", "Наука", "Настройки", "Порты"]
+const PortPanel = preload("res://scripts/view/port_panel.gd")
 const ICON_DIR := "res://assets/icons/"
 
 var _top_bar: PanelContainer
@@ -57,6 +59,7 @@ var _toast_token: int = 0
 var _result_panel: PanelContainer
 var _result_title: Label
 var _result_text: Label
+var port_panel: PortPanel
 var _blockers: Array = []
 var _continue_btn: Button
 var _sound_check: CheckButton
@@ -355,8 +358,18 @@ func _build_menu() -> void:
 	var p4: PanelContainer = _menu_panels[4]
 	p4.add_child(sbox)
 
+	# 5 Порты (прокрутка)
+	var pscroll := ScrollContainer.new()
+	pscroll.custom_minimum_size = Vector2(540, 400)
+	port_panel = PortPanel.new()
+	port_panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	pscroll.add_child(port_panel)
+	var p5: PanelContainer = _menu_panels[5]
+	p5.add_child(pscroll)
+
 
 func _on_menu_toggled(on: bool, index: int) -> void:
+	menu_toggled.emit(index, on)
 	for n in _menu_panels.size():
 		var p: PanelContainer = _menu_panels[n]
 		var b: Button = _menu_btns[n]
@@ -376,6 +389,25 @@ func set_difficulty(level: int) -> void:
 	for n in _diff_btns.size():
 		var b: Button = _diff_btns[n]
 		b.set_pressed_no_signal(n == level)
+
+
+## Открывает окно меню по номеру (5 = порты).
+func open_menu(index: int) -> void:
+	for n in _menu_panels.size():
+		var p: PanelContainer = _menu_panels[n]
+		var b: Button = _menu_btns[n]
+		p.visible = (n == index)
+		b.set_pressed_no_signal(n == index)
+	menu_toggled.emit(index, true)
+
+
+func close_menus() -> void:
+	_close_menu()
+
+
+func menu_open(index: int) -> bool:
+	var p: PanelContainer = _menu_panels[index]
+	return p.visible
 
 
 func _close_menu() -> void:

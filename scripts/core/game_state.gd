@@ -113,8 +113,6 @@ func reset() -> void:
 		population.append(float(cn["tiles"]) * POP_PER_TILE)
 		army.append(maxi(1, int(round(float(cn["tiles"]) / ARMY_TILES_PER_DIVISION))))
 		money.append(0.0)
-	for cid in world.countries.size():
-		money[cid] = maxf(0.0, daily_net(cid)) * START_MONEY_DAYS
 	rng.seed = 424242
 	game_over = 0
 	war_since = {}
@@ -141,6 +139,9 @@ func reset() -> void:
 		equipment.append(EQUIP_PER_DIVISION * START_EQUIP_DIVISIONS)
 		tech.append([0, 0, 0])
 		research.append({})
+	# стартовая казна считается, когда уже есть доли заводов и технологии (раньше money оставалась 0)
+	for cid in world.countries.size():
+		money[cid] = maxf(0.0, daily_net(cid)) * START_MONEY_DAYS
 	_place_armies()
 	Navy.give_start_ships(self)
 	_rebuild()
@@ -182,6 +183,13 @@ func tech_level(cid: int, branch: int) -> int:
 func equip_per_day(cid: int) -> float:
 	var cn: Dictionary = world.countries[cid]
 	return float(cn["factories"]) * float(mil_share[cid]) * EQUIP_PER_FACTORY * (1.0 + float(TECH_BONUS[2]) * float(tech_level(cid, 2)))
+
+
+## Стартовая казна игрока: если почему-то нулевая (старое сохранение, сбой), считаем заново.
+func ensure_start_money(cid: int) -> void:
+	var start := maxf(0.0, daily_net(cid)) * START_MONEY_DAYS
+	if float(money[cid]) < start * 0.5:
+		money[cid] = start
 
 
 func daily_net(cid: int) -> float:

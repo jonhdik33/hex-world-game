@@ -9,7 +9,6 @@ const MapView = preload("res://scripts/view/map_view.gd")
 const CameraCtl = preload("res://scripts/view/camera_controller.gd")
 const Hud = preload("res://scripts/view/hud.gd")
 const UnitsView = preload("res://scripts/view/units_view.gd")
-const PortPanel = preload("res://scripts/view/port_panel.gd")
 const SaveGame = preload("res://scripts/core/save_game.gd")
 const Navy = preload("res://scripts/core/navy.gd")
 const Sfx = preload("res://scripts/view/sfx.gd")
@@ -43,7 +42,6 @@ var _accum: float = 0.0
 var _picked: int = -1
 var _sel_land: int = -1
 var _sel_sea: int = -1        # выбранная морская ячейка
-var _port_panel: PortPanel
 var _port_tile: int = -1       # плитка порта, открытого в окне порта
 var _sel_ship_id: int = -1
 var _ship_cell: int = -1      # ячейка с выбранным своим кораблём (-1 = корабль не выбран)
@@ -82,10 +80,8 @@ func _ready() -> void:
 	hud = Hud.new()
 	add_child(hud)
 	hud.confirm_pressed.connect(_on_confirm)
-	_port_panel = PortPanel.new()
-	hud.add_child(_port_panel)
-	hud.register_blocker(_port_panel)
-	_port_panel.action.connect(_on_port_action)
+	hud.port_panel.action.connect(_on_port_action)
+	hud.menu_toggled.connect(_on_menu_toggled)
 	hud.regen_pressed.connect(_on_regen)
 	hud.speed_selected.connect(_on_speed)
 	hud.action_pressed.connect(_on_action)
@@ -187,7 +183,6 @@ func _on_tapped(screen_pos: Vector2, world_pos: Vector2) -> void:
 
 
 func _clear_all() -> void:
-	_close_port()
 	_sel_land = -1
 	_sel_sea = -1
 	_ship_cell = -1
@@ -218,6 +213,7 @@ func _on_confirm() -> void:
 	state.player = _picked
 	state.mil_share[_picked] = GameState.DEFAULT_MIL_SHARE
 	state.setup_bots()
+	state.ensure_start_money(_picked)
 	playing = true
 	speed = 1
 	_accum = 0.0
@@ -304,24 +300,29 @@ func _selected_ship() -> Dictionary:
 
 func _open_port(t: int) -> void:
 	_port_tile = t
-	_port_panel.rebuild(state, state.player, t)
-	_port_panel.visible = true
+	hud.open_menu(5)
 
 
 func _close_port() -> void:
-	_port_tile = -1
-	_port_panel.visible = false
+	hud.close_menus()
+
+
+func _on_menu_toggled(index: int, on: bool) -> void:
+	if index == 5 and on and playing:
+		hud.port_panel.rebuild(state, state.player, _port_tile)
 
 
 func _on_port_action(kind: String, ship_id: int, tile: int) -> void:
 	sfx.play("click")
 	var cid := state.player
 	var ship := Navy.ship_by_id(state, ship_id)
-	if kind == "close":
-		_close_port()
+	if kind == "select":
+		_port_tile = tile
+		hud.port_panel.rebuild(state, cid, _port_tile)
 		return
 	if kind.begins_with("buy_"):
 		var ty := int(kind.substr(4))
+		_port_tile = tile
 		if Navy.build_ship(state, cid, _port_tile, ty):
 			hud.show_event("Корабль куплен: %s" % Navy.type_name(ty).to_lower())
 			sfx.play("build")
@@ -343,6 +344,8 @@ func _on_port_action(kind: String, ship_id: int, tile: int) -> void:
 		else:
 			hud.show_event(Navy.bombard_reason(state, cid, ship, tile))
 	elif kind == "sail":
+		if ship.is_empty():
+			return
 		_sel_ship_id = ship_id
 		_ship_cell = int(ship["cell"])
 		_close_port()
@@ -350,8 +353,7 @@ func _on_port_action(kind: String, ship_id: int, tile: int) -> void:
 		return
 	units.refresh()
 	_refresh_hud()
-	if _port_tile >= 0:
-		_port_panel.rebuild(state, cid, _port_tile)
+	hud.port_panel.rebuild(state, cid, _port_tile)
 	if _sel_land >= 0:
 		_show_land_info(_sel_land)
 
@@ -618,7 +620,7 @@ func _balance_text(cid: int) -> String:
 	var b: Dictionary = state.budget(cid)
 	var army_n: int = state.army[cid]
 	var cn: Dictionary = world.countries[cid]
-	var lines: Array[String] = ["Баланс за день"]
+	var lines: Array[String] = ["Казна: %s" % GameState.fmt(float(state.money[cid])), "Население: %s" % GameState.fmt(float(state.population[cid])), "Баланс за день"]
 	lines.append("+ Налоги: %s" % GameState.fmt(b["tax"]))
 	lines.append("+ Заводы (%d): %s" % [cn["factories"], GameState.fmt(b["industry"])])
 	lines.append("- Заводы, содержание: %s" % GameState.fmt(b["upkeep_factories"]))

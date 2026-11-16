@@ -1,5 +1,6 @@
-extends PanelContainer
-## Окно порта: покупка кораблей (грузовой / боевой), погрузка и выгрузка дивизий, выход в море, обстрел.
+extends VBoxContainer
+## Содержимое окна «Порты» (вкладка в правой колонке): список своих портов, покупка кораблей,
+## корабли в выбранном порту, погрузка/выгрузка, выход в море, обстрел.
 ## Данные берёт у GameState при вызове rebuild(); наружу — сигнал action(kind, ship_id, tile).
 
 const Navy = preload("res://scripts/core/navy.gd")
@@ -8,21 +9,10 @@ signal action(kind: String, ship_id: int, tile: int)
 
 const FONT := 20
 
-var _box: VBoxContainer
-
 
 func _init() -> void:
-	visible = false
-	anchor_left = 0.5
-	anchor_right = 0.5
-	anchor_top = 0.5
-	anchor_bottom = 0.5
-	grow_horizontal = Control.GROW_DIRECTION_BOTH
-	grow_vertical = Control.GROW_DIRECTION_BOTH
-	custom_minimum_size = Vector2(560, 0)
-	_box = VBoxContainer.new()
-	_box.add_theme_constant_override("separation", 8)
-	add_child(_box)
+	add_theme_constant_override("separation", 8)
+	custom_minimum_size = Vector2(500, 0)
 
 
 func _label(text: String, size: int = FONT) -> Label:
@@ -43,15 +33,46 @@ func _button(text: String, kind: String, ship_id: int, tile: int, enabled: bool 
 	return b
 
 
-## Пересобирает окно для порта на плитке t страны cid.
-func rebuild(st, cid: int, t: int) -> void:
-	for c in _box.get_children():
+## Пересобирает окно. sel — выбранная плитка порта (если не порт, берётся первый).
+func rebuild(st, cid: int, sel: int) -> void:
+	for c in get_children():
 		c.queue_free()
-		_box.remove_child(c)
+		remove_child(c)
 	var w = st.world
-	_box.add_child(_label("Порт", 26))
-	_box.add_child(_label("Деньги: %s · Кораблей: %d/%d" % [st.fmt(float(st.money[cid])), Navy.count_of(st, cid), Navy.MAX_SHIPS]))
-
+	var ports: Array = []
+	for i in w.tile_total():
+		if w.land[i] == 1 and w.tile_owner[i] == cid and w.tile_port[i] == 1:
+			ports.append(i)
+	add_child(_label("Порты", 26))
+	add_child(_label("Деньги: %s · Кораблей: %d/%d" % [st.fmt(float(st.money[cid])), Navy.count_of(st, cid), Navy.MAX_SHIPS]))
+	if ports.is_empty():
+		add_child(_label("У вас нет портов. Выберите свой город на берегу и постройте порт."))
+		return
+	if not ports.has(sel):
+		sel = int(ports[0])
+	var t: int = sel
+	# список портов: у каждого — сколько кораблей стоит
+	var plist := GridContainer.new()
+	plist.columns = 2
+	plist.add_theme_constant_override("h_separation", 8)
+	plist.add_theme_constant_override("v_separation", 6)
+	var n := 0
+	for p in ports:
+		var pi: int = p
+		n += 1
+		var here := Navy.ships_at_port(st, cid, pi)
+		var wars := 0
+		for q in here:
+			var qd: Dictionary = q
+			if int(qd["type"]) == Navy.T_WAR:
+				wars += 1
+		var pb := _button("Порт %d: грузовых %d, боевых %d" % [n, here.size() - wars, wars], "select", -1, pi)
+		pb.toggle_mode = true
+		pb.set_pressed_no_signal(pi == t)
+		pb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		plist.add_child(pb)
+	add_child(plist)
+	add_child(HSeparator.new())
 	var buy := HBoxContainer.new()
 	buy.add_theme_constant_override("separation", 8)
 	for ty in [Navy.T_CARGO, Navy.T_WAR]:
@@ -60,15 +81,15 @@ func rebuild(st, cid: int, t: int) -> void:
 		var b := _button(txt, "buy_%d" % ty, -1, t, reason == "")
 		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		buy.add_child(b)
-	_box.add_child(buy)
+	add_child(buy)
 	var why := Navy.ship_block_reason(st, cid, t, Navy.T_CARGO)
 	if why == "Максимум кораблей (%d)" % Navy.MAX_SHIPS:
-		_box.add_child(_label(why))
+		add_child(_label(why))
 
-	_box.add_child(_label("Корабли в порту", 22))
+	add_child(_label("Корабли в порту", 22))
 	var ships := Navy.ships_at_port(st, cid, t)
 	if ships.is_empty():
-		_box.add_child(_label("Пока нет. Купите корабль выше."))
+		add_child(_label("Пока нет. Купите корабль выше."))
 	var loadable := Navy.loadable_tiles(st, cid, t)
 	for s in ships:
 		var sh: Dictionary = s
@@ -98,7 +119,6 @@ func rebuild(st, cid: int, t: int) -> void:
 				btns.add_child(_button("Обстрелять", "bomb", id, int(tg[k])))
 		btns.add_child(_button("В плавание", "sail", id, t))
 		row.add_child(btns)
-		_box.add_child(row)
+		add_child(row)
 	if ships.size() > 0 and loadable.is_empty():
-		_box.add_child(_label("Чтобы погрузить, поставьте готовую дивизию на плитку порта или рядом."))
-	_box.add_child(_button("Закрыть", "close", -1, t))
+		add_child(_label("Чтобы погрузить, поставьте готовую дивизию на плитку порта или рядом."))
