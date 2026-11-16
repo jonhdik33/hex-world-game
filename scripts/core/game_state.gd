@@ -79,6 +79,7 @@ var at_war: Dictionary = {}   # пары стран в состоянии вой
 var _next_id: int = 1
 var build_queue: Array = []   # стройки: [{cid, tile, days_left, new_city}]
 var events: Array = []        # сообщения для игрока (забирает main и очищает)
+var sounds: Array = []        # звуки для игрока (забирает main и очищает)
 var map_dirty: bool = false   # true, если карта изменилась (достроен завод/город)
 
 
@@ -95,6 +96,7 @@ func reset() -> void:
 	army = []
 	build_queue = []
 	events = []
+	sounds = []
 	map_dirty = false
 	for cid in world.countries.size():
 		var cn: Dictionary = world.countries[cid]
@@ -510,6 +512,8 @@ func _advance_move(e: Dictionary, dt: float) -> void:
 		if unit_on.has(nxt):
 			e["state"] = ST_FIGHT
 			e["fight_t"] = 0.0
+			if cid == player or world.tile_owner[nxt] == player:
+				sounds.append("battle")
 		else:
 			_capture(cid, world.tile_owner[nxt], nxt)
 			e["crossed"] = true
@@ -594,6 +598,10 @@ func _note(att: int, def: int, text: String) -> void:
 func _capture(att: int, def: int, t: int) -> void:
 	var da: Dictionary = world.countries[att]
 	var dd: Dictionary = world.countries[def]
+	if att == player:
+		sounds.append("capture")
+	elif def == player:
+		sounds.append("alert")
 	if int(dd["capital"]) == t:
 		_annex(att, def)
 		return
@@ -723,6 +731,7 @@ func _progress_research(cid: int) -> void:
 	research[cid] = {}
 	if cid == player:
 		events.append("Исследование завершено: %s %d" % [TECH_NAMES[br], int(t[br])])
+		sounds.append("research")
 
 
 # ---------- стройка ----------
@@ -802,6 +811,7 @@ func _progress_builds() -> void:
 		map_dirty = true
 		if cid == player:
 			events.append("Достроен завод (плитка %d, %d)" % [world.col_of(t), world.row_of(t)])
+			sounds.append("build")
 	build_queue = left
 
 

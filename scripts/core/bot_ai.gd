@@ -116,6 +116,7 @@ static func _war(st, cid: int, own: Array, aggr: float) -> void:
 	if target == st.player:
 		var cn: Dictionary = st.world.countries[cid]
 		st.events.append("%s объявила вам войну!" % cn["name"])
+		st.sounds.append("alert")
 
 
 static func _move(st, cid: int, own: Array) -> void:
@@ -149,6 +150,20 @@ static func _move(st, cid: int, own: Array) -> void:
 		var at: int = e["tile"]
 		if at == capital and int(st.army[cid]) < 3:
 			continue
+		# главная цель — столица ближайшего врага: идём к ней кратчайшим путём
+		var cap_t := _nearest_enemy_capital(st, at, enemies)
+		if cap_t >= 0:
+			var path: Array = st.find_path(cid, at, cap_t)
+			if not path.is_empty():
+				var first: int = path[0]
+				var dfn: Dictionary = st.unit_at(first)
+				var weaker: bool = world.tile_owner[first] != cid and not dfn.is_empty() and float(e["hp"]) < float(dfn["hp"]) * 1.1
+				if weaker:
+					continue   # слабее защитника на пути: ждём подкрепления / лечения
+				var resc: Dictionary = st.order_move(cid, at, cap_t)
+				if resc["ok"]:
+					orders += 1
+					continue
 		# рядом враг: атакуем, если не слабее защитника (или плитка пуста)
 		var attacked := false
 		for k in 6:
@@ -181,3 +196,17 @@ static func _move(st, cid: int, own: Array) -> void:
 			if res2["ok"]:
 				taken[best] = true
 				orders += 1
+
+
+## Столица ближайшего (по прямой) врага, с которым война.
+static func _nearest_enemy_capital(st, from_tile: int, enemies: Dictionary) -> int:
+	var here: Vector2 = st.world.center_of(from_tile)
+	var best := -1
+	var best_d := 0.0
+	for o in enemies.keys():
+		var cap: int = st.world.countries[int(o)]["capital"]
+		var d: float = here.distance_squared_to(st.world.center_of(cap))
+		if best < 0 or d < best_d:
+			best = cap
+			best_d = d
+	return best

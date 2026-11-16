@@ -10,13 +10,18 @@ signal action_pressed(id: String)
 signal production_changed(percent: int)
 signal research_pressed(branch: int)
 signal restart_pressed
+signal continue_pressed
+signal save_pressed
+signal sound_toggled(on: bool)
+signal volume_changed(value: float)
 
 const GameState = preload("res://scripts/core/game_state.gd")
 
 const FONT := 22
 const SPEED_NAMES: Array = ["Пауза", "x1", "x2", "x3"]
 const ACTION_SLOTS := 5
-const MENU_NAMES: Array = ["Баланс", "Страны", "Производство", "Наука"]
+const MENU_NAMES: Array = ["Баланс", "Страны", "Производство", "Наука", "Настройки"]
+const ICON_DIR := "res://assets/icons/"
 
 var _top_bar: PanelContainer
 var _lbl_money: Label
@@ -50,6 +55,10 @@ var _result_panel: PanelContainer
 var _result_title: Label
 var _result_text: Label
 var _blockers: Array = []
+var _continue_btn: Button
+var _sound_check: CheckButton
+var _volume_slider: HSlider
+var _pfx: Dictionary = {}   # подписи вместо иконок, если иконка не загрузилась
 
 
 func _init() -> void:
@@ -66,11 +75,11 @@ func _build() -> void:
 	_top_bar.offset_top = 8.0
 	var row := HBoxContainer.new()
 	_top_bar.add_child(row)
-	_lbl_money = _stat_label(row, Color(1.0, 0.86, 0.4))
-	_lbl_fact = _stat_label(row, Color(0.95, 0.6, 0.45))
-	_lbl_army = _stat_label(row, Color(0.75, 0.9, 0.6))
-	_lbl_pop = _stat_label(row, Color(0.6, 0.85, 1.0))
-	_lbl_date = _stat_label(row, Color(0.85, 0.9, 0.95))
+	_lbl_money = _stat_label(row, Color(1.0, 0.86, 0.4), "coin", "Казна ")
+	_lbl_fact = _stat_label(row, Color(0.95, 0.6, 0.45), "factory", "Заводы ")
+	_lbl_army = _stat_label(row, Color(0.75, 0.9, 0.6), "soldier", "Армия ")
+	_lbl_pop = _stat_label(row, Color(0.6, 0.85, 1.0), "people", "Население ")
+	_lbl_date = _stat_label(row, Color(0.85, 0.9, 0.95), "calendar", "")
 	_top_bar.visible = false
 
 	# --- подсказка (во время выбора страны) ---
@@ -93,6 +102,16 @@ func _build() -> void:
 	_regen_btn.offset_right = -8.0
 	_regen_btn.offset_top = 8.0
 	_regen_btn.pressed.connect(func(): regen_pressed.emit())
+
+	# --- кнопка «Продолжить» (если есть сохранение; только при выборе страны) ---
+	_continue_btn = Button.new()
+	_continue_btn.text = "Продолжить игру"
+	_continue_btn.add_theme_font_size_override("font_size", FONT)
+	add_child(_continue_btn)
+	_continue_btn.offset_left = 8.0
+	_continue_btn.offset_top = 8.0
+	_continue_btn.pressed.connect(func(): continue_pressed.emit())
+	_continue_btn.visible = false
 
 	# --- информация о плитке и кнопки действий (слева внизу) ---
 	_info_panel = _make_panel()
@@ -201,7 +220,7 @@ func _build() -> void:
 	_result_panel.visible = false
 
 	_blockers = [_top_bar, _hint_panel, _regen_btn, _info_panel, _pick_panel, _speed_box,
-		_menu_row, _result_panel]
+		_menu_row, _result_panel, _continue_btn]
 	for p in _menu_panels:
 		_blockers.append(p)
 
@@ -278,6 +297,37 @@ func _build_menu() -> void:
 	p3.add_child(rbox)
 
 
+	# 4 Настройки
+	var sbox := VBoxContainer.new()
+	_sound_check = CheckButton.new()
+	_sound_check.text = "Звук"
+	_sound_check.button_pressed = true
+	_sound_check.add_theme_font_size_override("font_size", FONT)
+	_sound_check.toggled.connect(func(on: bool): sound_toggled.emit(on))
+	sbox.add_child(_sound_check)
+	sbox.add_child(_plain_label("Громкость", Color(0.92, 0.95, 1.0)))
+	_volume_slider = HSlider.new()
+	_volume_slider.min_value = 0.0
+	_volume_slider.max_value = 1.0
+	_volume_slider.step = 0.05
+	_volume_slider.value = 0.7
+	_volume_slider.custom_minimum_size = Vector2(380, 40)
+	_volume_slider.value_changed.connect(func(v: float): volume_changed.emit(v))
+	sbox.add_child(_volume_slider)
+	var save_btn := Button.new()
+	save_btn.text = "Сохранить игру"
+	save_btn.add_theme_font_size_override("font_size", FONT)
+	save_btn.pressed.connect(func(): save_pressed.emit())
+	sbox.add_child(save_btn)
+	var new_btn := Button.new()
+	new_btn.text = "Новая игра (с начала)"
+	new_btn.add_theme_font_size_override("font_size", FONT)
+	new_btn.pressed.connect(func(): restart_pressed.emit())
+	sbox.add_child(new_btn)
+	var p4: PanelContainer = _menu_panels[4]
+	p4.add_child(sbox)
+
+
 func _on_menu_toggled(on: bool, index: int) -> void:
 	for n in _menu_panels.size():
 		var p: PanelContainer = _menu_panels[n]
@@ -320,6 +370,7 @@ func enter_play() -> void:
 	_top_bar.visible = true
 	_speed_box.visible = true
 	_menu_row.visible = true
+	_continue_btn.visible = false
 
 
 ## Возврат к выбору страны (новая игра).
@@ -335,15 +386,24 @@ func enter_pick() -> void:
 	set_actions([])
 
 
+func set_continue_visible(on: bool) -> void:
+	_continue_btn.visible = on
+
+
+func set_settings(sound_on: bool, volume: float) -> void:
+	_sound_check.set_pressed_no_signal(sound_on)
+	_volume_slider.set_value_no_signal(volume)
+
+
 func set_resources(money: float, net: float, factories: int, army: int, pop: float, date_text: String) -> void:
-	_lbl_money.text = "Казна %s (%s/день)" % [GameState.fmt(money), GameState.fmt_signed(net)]
+	_lbl_money.text = "%s%s (%s/день)" % [_pfx[_lbl_money], GameState.fmt(money), GameState.fmt_signed(net)]
 	var col := Color(1.0, 0.86, 0.4)
 	if money < 0.0:
 		col = Color(1.0, 0.4, 0.35)
 	_lbl_money.add_theme_color_override("font_color", col)
-	_lbl_fact.text = "Заводы %d" % factories
-	_lbl_army.text = "Армия %d" % army
-	_lbl_pop.text = "Население %s" % GameState.fmt(pop)
+	_lbl_fact.text = "%s%d" % [_pfx[_lbl_fact], factories]
+	_lbl_army.text = "%s%d" % [_pfx[_lbl_army], army]
+	_lbl_pop.text = "%s%s" % [_pfx[_lbl_pop], GameState.fmt(pop)]
 	_lbl_date.text = date_text
 
 
@@ -457,9 +517,26 @@ func _plain_label(text: String, color: Color) -> Label:
 	return l
 
 
-func _stat_label(parent: Control, color: Color) -> Label:
+func _stat_label(parent: Control, color: Color, icon: String, prefix: String) -> Label:
+	var box := HBoxContainer.new()
+	box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	box.alignment = BoxContainer.ALIGNMENT_CENTER
+	parent.add_child(box)
+	var path := ICON_DIR + icon + ".svg"
+	var tex: Texture2D = null
+	if ResourceLoader.exists(path):
+		tex = load(path) as Texture2D
+	if tex != null:
+		var tr := TextureRect.new()
+		tr.texture = tex
+		tr.custom_minimum_size = Vector2(30, 30)
+		tr.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		tr.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		box.add_child(tr)
 	var l := _plain_label("", color)
-	l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	parent.add_child(l)
+	box.add_child(l)
+	if tex != null:
+		_pfx[l] = ""
+	else:
+		_pfx[l] = prefix
 	return l

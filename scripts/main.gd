@@ -9,6 +9,11 @@ const MapView = preload("res://scripts/view/map_view.gd")
 const CameraCtl = preload("res://scripts/view/camera_controller.gd")
 const Hud = preload("res://scripts/view/hud.gd")
 const UnitsView = preload("res://scripts/view/units_view.gd")
+const SaveGame = preload("res://scripts/core/save_game.gd")
+const Sfx = preload("res://scripts/view/sfx.gd")
+
+const SETTINGS_PATH := "user://settings.cfg"
+const AUTOSAVE_DAYS := 30
 
 const MASK_PATH := "res://assets/map_mask.png"
 const START_SEED := 12345
@@ -23,6 +28,10 @@ var map_view: MapView
 var units: UnitsView
 var camera: CameraCtl
 var hud: Hud
+var sfx: Sfx
+var sound_on: bool = true
+var volume: float = 0.7
+var _last_save_day: int = 0
 
 var seed_value: int = START_SEED
 var playing: bool = false
@@ -31,7 +40,6 @@ var speed: int = 1
 var _accum: float = 0.0
 var _picked: int = -1
 var _sel_land: int = -1
-var _move_from: int = -1      # режим «двигать»: откуда
 
 
 func _ready() -> void:
@@ -72,6 +80,16 @@ func _ready() -> void:
 	hud.research_pressed.connect(_on_research)
 	hud.restart_pressed.connect(_on_restart)
 
+	sfx = Sfx.new()
+	add_child(sfx)
+	_load_settings()
+	hud.set_settings(sound_on, volume)
+	hud.continue_pressed.connect(_on_continue)
+	hud.save_pressed.connect(_on_save_pressed)
+	hud.sound_toggled.connect(_on_sound_toggled)
+	hud.volume_changed.connect(_on_volume_changed)
+	hud.set_continue_visible(SaveGame.exists())
+
 	_show_info_empty()
 
 
@@ -79,7 +97,7 @@ func _process(delta: float) -> void:
 	if not playing or over or speed <= 0:
 		return
 	state.advance(delta * float(ANIM_FACTOR[speed]))
-	if state.events.size() > 0 or state.map_dirty:
+	if state.events.size() > 0 or state.map_dirty or state.sounds.size() > 0:
 		_after_ticks()
 	_accum += delta
 	var step: float = DAY_SECONDS[speed]
@@ -92,6 +110,8 @@ func _process(delta: float) -> void:
 		_after_ticks()
 	if state.game_over != 0:
 		_finish()
+	elif state.day - _last_save_day >= AUTOSAVE_DAYS:
+		_save_now()
 
 
 # ---------- события ----------
@@ -104,11 +124,14 @@ func _on_tapped(screen_pos: Vector2, world_pos: Vector2) -> void:
 		return
 
 	var i := map_view.pick_land(world_pos)
-	if i >= 0 and _move_from >= 0 and playing:
-		if _try_move(i):
-			return
+	# выбрана своя готовая дивизия: нажатие на другую плитку = приказ идти туда
+	if i >= 0 and playing and _sel_land >= 0 and i != _sel_land and _has_ready_unit(_sel_land) and not _has_own_unit(i):
+		_try_move(_sel_land, i)
+		return
+	if i >= 0 and i == _sel_land and playing and _has_ready_unit(i):
+		_clear_all()   # повторное нажатие на выбранную дивизию снимает выбор
+		return
 	if i >= 0:
-		_move_from = -1
 		_sel_land = i
 		map_view.select_land(i)
 		if not playing:
@@ -118,7 +141,6 @@ func _on_tapped(screen_pos: Vector2, world_pos: Vector2) -> void:
 
 	# нажали на воду: выбираем крупную морскую ячейку
 	_sel_land = -1
-	_move_from = -1
 	hud.set_actions([])
 	if not playing:
 		_picked = -1
@@ -134,7 +156,6 @@ func _on_tapped(screen_pos: Vector2, world_pos: Vector2) -> void:
 
 func _clear_all() -> void:
 	_sel_land = -1
-	_move_from = -1
 	hud.set_actions([])
 	map_view.clear_selection()
 	if not playing:
@@ -176,6 +197,7 @@ func _on_confirm() -> void:
 func _on_action(id: String) -> void:
 	if not playing or _sel_land < 0:
 		return
+	sfx.play("click")
 	var cid := state.player
 	var t := _sel_land
 	if id == "build":
@@ -190,10 +212,6 @@ func _on_action(id: String) -> void:
 		if state.disband(cid, t):
 			hud.show_event("Дивизия распущена")
 			units.refresh()
-	elif id == "move":
-		_move_from = t
-		hud.show_event("Нажмите на плитку-цель (маршрут проложится сам)")
-		return
 	elif id == "stop":
 		state.stop_marching(cid, t)
 		hud.show_event("Поход остановлен")
@@ -215,20 +233,32 @@ func _on_action(id: String) -> void:
 	_show_land_info(t)
 
 
-## Тап в режиме «двигать»: true, если тап обработан как приказ.
-func _try_move(to: int) -> bool:
-	var from := _move_from
-	_move_from = -1
+## Своя дивизия на плитке готова к приказу (стоит и отдохнула).
+func _has_ready_unit(t: int) -> bool:
+	var u: Dictionary = state.unit_at(t)
+	return not u.is_empty() and int(u["owner"]) == state.player and int(u["state"]) == GameState.ST_IDLE and int(u["recover"]) <= 0
+
+
+func _has_own_unit(t: int) -> bool:
+	var u: Dictionary = state.unit_at(t)
+	return not u.is_empty() and int(u["owner"]) == state.player
+
+
+func _try_move(from: int, to: int) -> void:
 	var res: Dictionary = state.order_move(state.player, from, to)
 	hud.show_event(res["msg"])
+	if res["ok"]:
+		sfx.play("click")
 	units.refresh()
 	_refresh_hud()
 	_show_land_info(from)
-	return true
 
 
 ## После дневных тиков: сообщения, изменения карты, интерфейс.
 func _after_ticks() -> void:
+	for snd in state.sounds:
+		sfx.play(str(snd))
+	state.sounds = []
 	if state.events.size() > 0:
 		hud.show_event("\n".join(state.events))
 		state.events = []
@@ -240,6 +270,83 @@ func _after_ticks() -> void:
 			_show_land_info(_sel_land)
 	units.refresh()
 	_refresh_hud()
+
+
+func _save_now() -> void:
+	if playing and not over and state.player >= 0:
+		if SaveGame.save(world, state, seed_value):
+			_last_save_day = state.day
+
+
+func _on_save_pressed() -> void:
+	_save_now()
+	hud.show_event("Игра сохранена")
+
+
+## «Продолжить игру»: карта по сохранённому seed + сохранённое состояние.
+func _on_continue() -> void:
+	var sd := SaveGame.read_seed()
+	if sd < 0:
+		hud.show_event("Сохранение не найдено")
+		hud.set_continue_visible(false)
+		return
+	seed_value = sd
+	WorldGen.assign_countries(world, seed_value)
+	if not SaveGame.load_into(world, state):
+		hud.show_event("Не удалось загрузить сохранение")
+		return
+	over = false
+	playing = true
+	speed = 1
+	_accum = 0.0
+	_last_save_day = state.day
+	_picked = -1
+	_sel_land = -1
+	map_view.set_player(state.player)
+	units.set_player(state.player)
+	map_view.set_construction(state.construction_tiles(state.player))
+	map_view.clear_selection()
+	map_view.refresh()
+	units.refresh()
+	hud.enter_play()
+	hud.set_speed_mark(speed)
+	_refresh_hud()
+	_show_info_empty()
+
+
+func _notification(what: int) -> void:
+	# приложение свернули или закрывают: сохраняем партию
+	if what == NOTIFICATION_APPLICATION_PAUSED or what == NOTIFICATION_WM_CLOSE_REQUEST:
+		_save_now()
+
+
+func _load_settings() -> void:
+	var cf := ConfigFile.new()
+	if cf.load(SETTINGS_PATH) == OK:
+		sound_on = bool(cf.get_value("sound", "on", true))
+		volume = float(cf.get_value("sound", "volume", 0.7))
+	sfx.enabled = sound_on
+	sfx.volume = volume
+
+
+func _store_settings() -> void:
+	var cf := ConfigFile.new()
+	cf.set_value("sound", "on", sound_on)
+	cf.set_value("sound", "volume", volume)
+	cf.save(SETTINGS_PATH)
+
+
+func _on_sound_toggled(on: bool) -> void:
+	sound_on = on
+	sfx.enabled = on
+	_store_settings()
+
+
+func _on_volume_changed(v: float) -> void:
+	volume = v
+	sfx.volume = v
+	_store_settings()
+	sfx.play("click")
 
 
 func _on_production(percent: int) -> void:
@@ -262,9 +369,12 @@ func _finish() -> void:
 	if over:
 		return
 	over = true
+	SaveGame.delete()
 	if state.game_over == 1:
+		sfx.play("win")
 		hud.show_result("ПОБЕДА", "Вы присоединили все страны мира.")
 	else:
+		sfx.play("lose")
 		hud.show_result("ПОРАЖЕНИЕ", "Ваша столица захвачена, страна присоединена к победителю.")
 
 
@@ -272,12 +382,12 @@ func _finish() -> void:
 func _on_restart() -> void:
 	over = false
 	playing = false
+	SaveGame.delete()
 	seed_value += 1
 	WorldGen.assign_countries(world, seed_value)
 	state.reset()
 	_picked = -1
 	_sel_land = -1
-	_move_from = -1
 	map_view.set_player(-1)
 	units.set_player(-1)
 	map_view.clear_selection()
@@ -285,6 +395,7 @@ func _on_restart() -> void:
 	map_view.refresh()
 	units.refresh()
 	hud.enter_pick()
+	hud.set_continue_visible(false)
 	_show_info_empty()
 
 
@@ -426,6 +537,8 @@ func _show_land_info(t: int) -> void:
 			info += ", отдыхает %d дн." % int(u["recover"])
 		elif int(u["state"]) != GameState.ST_IDLE:
 			info += ", в походе"
+		elif int(u["owner"]) == state.player:
+			info += "\nНажмите на плитку, чтобы отправить дивизию"
 		lines.append(info)
 	if playing and cid >= 0 and cid != state.player and state.is_at_war(state.player, cid):
 		lines.append("С этой страной война")
@@ -471,7 +584,6 @@ func _update_actions(t: int) -> void:
 	var u := state.unit_at(t)
 	if not u.is_empty():
 		if int(u["state"]) == GameState.ST_IDLE and int(u["recover"]) <= 0:
-			list.append({"id": "move", "text": "Отправить дивизию", "enabled": true})
 			list.append({"id": "disband", "text": "Распустить дивизию", "enabled": true})
 		elif int(u["state"]) != GameState.ST_IDLE:
 			list.append({"id": "stop", "text": "Остановить поход", "enabled": true})
