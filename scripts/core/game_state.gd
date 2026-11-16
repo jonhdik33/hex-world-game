@@ -149,6 +149,28 @@ func reset() -> void:
 
 # ---------- экономика ----------
 
+## Содержание флота в день (грузовой 40, боевой 70) — считаем здесь, без обращений к Navy.
+func fleet_upkeep(cid: int) -> float:
+	var sum := 0.0
+	for s in ships:
+		var d: Dictionary = s
+		if int(d["owner"]) == cid:
+			if int(d["type"]) == 1:
+				sum += 70.0
+			else:
+				sum += 40.0
+	return sum
+
+
+func ship_count(cid: int) -> int:
+	var n := 0
+	for s in ships:
+		var d: Dictionary = s
+		if int(d["owner"]) == cid:
+			n += 1
+	return n
+
+
 ## Все статьи дневного бюджета страны.
 func budget(cid: int) -> Dictionary:
 	var cn: Dictionary = world.countries[cid]
@@ -158,7 +180,7 @@ func budget(cid: int) -> Dictionary:
 	var up_f := float(cn["factories"]) * FACTORY_UPKEEP
 	var up_c := float(cn["cities"]) * CITY_UPKEEP
 	var up_a := float(army[cid]) * DIVISION_UPKEEP
-	var up_s := Navy.upkeep(self, cid)
+	var up_s := fleet_upkeep(cid)
 	var income := tax + industry
 	var expenses := up_f + up_c + up_a + up_s
 	return {

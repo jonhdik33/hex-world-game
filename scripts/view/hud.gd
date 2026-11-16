@@ -576,7 +576,7 @@ func _on_speed_pressed(speed: int) -> void:
 func _make_panel() -> PanelContainer:
 	var p := PanelContainer.new()
 	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(0.07, 0.11, 0.2, 0.92)
+	sb.bg_color = Color(0.07, 0.11, 0.2, 0.98)
 	sb.border_color = Color(0.35, 0.5, 0.75, 1.0)
 	sb.set_border_width_all(2)
 	sb.set_corner_radius_all(10)

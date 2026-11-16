@@ -8,6 +8,7 @@ const Navy = preload("res://scripts/core/navy.gd")
 signal action(kind: String, ship_id: int, tile: int)
 
 const FONT := 20
+const GS = preload("res://scripts/core/game_state.gd")
 
 
 func _init() -> void:
@@ -44,7 +45,7 @@ func rebuild(st, cid: int, sel: int) -> void:
 		if w.land[i] == 1 and w.tile_owner[i] == cid and w.tile_port[i] == 1:
 			ports.append(i)
 	add_child(_label("Порты", 26))
-	add_child(_label("Деньги: %s · Кораблей: %d/%d" % [st.fmt(float(st.money[cid])), Navy.count_of(st, cid), Navy.MAX_SHIPS]))
+	add_child(_label("Деньги: %s · Кораблей: %d/%d" % [GS.fmt(float(st.money[cid])), st.ship_count(cid), Navy.MAX_SHIPS]))
 	if ports.is_empty():
 		add_child(_label("У вас нет портов. Выберите свой город на берегу и постройте порт."))
 		return
@@ -77,7 +78,7 @@ func rebuild(st, cid: int, sel: int) -> void:
 	buy.add_theme_constant_override("separation", 8)
 	for ty in [Navy.T_CARGO, Navy.T_WAR]:
 		var reason := Navy.ship_block_reason(st, cid, t, ty)
-		var txt := "Купить %s\n%s · %s/день" % [Navy.type_name(ty).to_lower(), st.fmt(Navy.cost_of(ty)), st.fmt(Navy.upkeep_of(ty))]
+		var txt := "Купить %s\n%s · %s/день" % [Navy.type_name(ty).to_lower(), GS.fmt(Navy.cost_of(ty)), GS.fmt(Navy.upkeep_of(ty))]
 		var b := _button(txt, "buy_%d" % ty, -1, t, reason == "")
 		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		buy.add_child(b)

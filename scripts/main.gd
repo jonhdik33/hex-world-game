@@ -627,7 +627,7 @@ func _balance_text(cid: int) -> String:
 	lines.append("- Города (%d): %s" % [cn["cities"], GameState.fmt(b["upkeep_cities"])])
 	lines.append("- Армия (%d див.): %s" % [army_n, GameState.fmt(b["upkeep_army"])])
 	if float(b["upkeep_ships"]) > 0.0:
-		lines.append("- Флот (%d): %s" % [Navy.count_of(state, cid), GameState.fmt(b["upkeep_ships"])])
+		lines.append("- Флот (%d): %s" % [state.ship_count(cid), GameState.fmt(b["upkeep_ships"])])
 	lines.append("ИТОГО: %s/день" % GameState.fmt_signed(b["net"]))
 	var nb := state.construction_tiles(cid).size()
 	if nb > 0:
