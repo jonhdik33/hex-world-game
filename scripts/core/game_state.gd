@@ -23,11 +23,11 @@ const START_MONEY_DAYS := 30.0        # стартовая казна = стол
 const FACTORY_UPKEEP := 30.0          # содержание одного завода
 const CITY_UPKEEP := 20.0             # содержание одного города
 const DIVISION_UPKEEP := 50.0         # содержание одной дивизии
-const ARMY_TILES_PER_DIVISION := 8.0  # стартовая армия: 1 дивизия на столько плиток
+const ARMY_TILES_PER_DIVISION := 16.0  # стартовая армия: 1 дивизия на столько плиток
 
 # армия
 const RECRUIT_COST := 1500.0          # найм одной дивизии (в городе, сразу)
-const STEP_SECONDS := 3.0             # шаг на соседнюю плитку (реальных секунд при x1)
+const STEP_SECONDS := 4.0             # шаг на соседнюю плитку (реальных секунд при x1)
 const BATTLE_DPS := 20.0              # урон в секунду одной дивизии полной силы
 const BATTLE_MAX := 40.0              # дольше этого бой не длится
 const RECOVER_DAYS := 3               # дней отдыха после боя
@@ -143,11 +143,58 @@ func reset() -> void:
 	for cid in world.countries.size():
 		money[cid] = maxf(0.0, daily_net(cid)) * START_MONEY_DAYS
 	_place_armies()
-	Navy.give_start_ships(self)
+	give_start_ships()
 	_rebuild()
 
 
 # ---------- экономика ----------
+
+## Страна присоединена: её корабли исчезают (вместе с грузом).
+func _remove_ships_of(cid: int) -> void:
+	var keep: Array = []
+	for s in ships:
+		var d: Dictionary = s
+		if int(d["owner"]) != cid:
+			keep.append(d)
+	ships = keep
+
+
+## Новый корабль в морской ячейке (type 0 десантный, 1 боевой).
+func new_ship(cid: int, cell: int, ship_type: int) -> Dictionary:
+	var sh := {"id": _next_ship_id, "owner": cid, "cell": cell, "from_cell": cell, "path": [], "p": 0.0,
+		"state": 0, "cargo": {}, "land_tile": -1, "type": ship_type, "bomb": -1, "bomb_t": 0.0}
+	_next_ship_id += 1
+	ships.append(sh)
+	return sh
+
+
+## Острова: у страны на отдельном острове с начала есть один десантный корабль в порту.
+func give_start_ships() -> void:
+	var owners_by_mass := {}
+	for i in world.tile_total():
+		if world.land[i] == 0 or world.tile_owner[i] < 0:
+			continue
+		var m: int = world.landmass[i]
+		if not owners_by_mass.has(m):
+			owners_by_mass[m] = {}
+		var d: Dictionary = owners_by_mass[m]
+		d[int(world.tile_owner[i])] = true
+	for cid in world.countries.size():
+		var island := true
+		var has_tile := false
+		for m in owners_by_mass.keys():
+			var d2: Dictionary = owners_by_mass[m]
+			if d2.has(cid):
+				has_tile = true
+				if d2.size() > 1:
+					island = false
+		if not island or not has_tile:
+			continue
+		for i in world.tile_total():
+			if world.tile_owner[i] == cid and world.tile_port[i] == 1:
+				new_ship(cid, world.tile_sea[i], 0)
+				break
+
 
 ## Содержание флота в день (грузовой 40, боевой 70) — считаем здесь, без обращений к Navy.
 func fleet_upkeep(cid: int) -> float:
@@ -219,6 +266,20 @@ func daily_net(cid: int) -> float:
 	return float(b["net"])
 
 
+## Сколько соседних плиток занято дивизиями врага (стран, с которыми война).
+func _enemies_around(e: Dictionary) -> int:
+	var n := 0
+	var t: int = e["tile"]
+	for k in 6:
+		var nb: int = world.neighbor(t, k)
+		if nb < 0 or not unit_on.has(nb):
+			continue
+		var o: Dictionary = unit_on[nb]
+		if is_at_war(int(e["owner"]), int(o["owner"])):
+			n += 1
+	return n
+
+
 func tick_day() -> void:
 	for cid in world.countries.size():
 		money[cid] = float(money[cid]) + daily_net(cid)
@@ -232,6 +293,8 @@ func tick_day() -> void:
 				events.append("Нет денег: распущена одна дивизия")
 	for sq in squads:
 		var e: Dictionary = sq
+		if _enemies_around(e) >= 2:
+			continue   # дивизию окружают враги: отдых и лечение стоят
 		if int(e["recover"]) > 0:
 			e["recover"] = int(e["recover"]) - 1
 		e["hp"] = minf(MAX_HP, float(e["hp"]) + HEAL_PER_DAY)
@@ -597,7 +660,6 @@ func advance(dt: float) -> void:
 			continue
 		_advance_move(e, dt)
 	_tick_battles(dt)
-	Navy.advance(self, dt)
 
 
 func _advance_move(e: Dictionary, dt: float) -> void:
@@ -612,13 +674,9 @@ func _advance_move(e: Dictionary, dt: float) -> void:
 		return
 	var hostile: bool = world.tile_owner[nxt] != cid and not bool(e["crossed"])
 	var p: float = float(e["p"]) + dt / STEP_SECONDS
-	if hostile and p >= 0.5:
+	if hostile and p >= 0.5 and unit_on.has(nxt):
 		e["p"] = 0.5
-		if unit_on.has(nxt):
-			_join_battle(e, nxt)
-		else:
-			_capture(cid, world.tile_owner[nxt], nxt)
-			e["crossed"] = true
+		_join_battle(e, nxt)
 		return
 	e["p"] = minf(p, 1.0)
 	if p < 1.0:
@@ -631,6 +689,13 @@ func _advance_move(e: Dictionary, dt: float) -> void:
 			e["wait_t"] = 0.0
 			_reroute(e)
 		return
+	# плитка меняет цвет только теперь, когда солдат дошёл до её центра
+	var ow: int = world.tile_owner[nxt]
+	if ow != cid and ow >= 0:
+		var was_battle: bool = bool(e["crossed"])
+		_capture(cid, ow, nxt)
+		if was_battle:
+			_note(cid, ow, "Плитка захвачена")
 	unit_on.erase(int(e["tile"]))
 	tile_army[int(e["tile"])] = 0
 	e["tile"] = nxt
@@ -777,16 +842,12 @@ func _end_battle(b: Dictionary) -> void:
 		_rebuild()
 		return
 	if def.is_empty():
-		var att_owner: int = int(att[0]["owner"])
-		var def_owner2: int = int(b["def_owner"])
 		for u in att:
 			var a: Dictionary = u
 			a["state"] = ST_MOVE
 			a["recover"] = RECOVER_DAYS
 			a["crossed"] = true
-		if def_owner2 != att_owner and def_owner2 >= 0:
-			_capture(att_owner, def_owner2, target)
-			_note(att_owner, def_owner2, "Плитка захвачена")
+		# плитку захватит победитель, когда дойдёт до её центра (см. _advance_move)
 		_rebuild()
 		return
 	# время вышло, обе стороны живы: атакующие отступают, защитники возвращаются к делам
@@ -885,7 +946,7 @@ func _annex(att: int, def: int) -> void:
 		if int(b["cid"]) != def:
 			q.append(b)
 	build_queue = q
-	Navy.remove_country(self, def)
+	_remove_ships_of(def)
 	_rebuild()
 	map_dirty = true
 	if att == player:

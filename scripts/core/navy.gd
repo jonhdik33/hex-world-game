@@ -62,7 +62,7 @@ static func upkeep_of(t: int) -> float:
 static func type_name(t: int) -> String:
 	if t == T_WAR:
 		return "Боевой"
-	return "Грузовой"
+	return "Десантный"
 
 
 ## Суммарное содержание флота страны в день.
@@ -264,6 +264,8 @@ static func order_ship(st, cid: int, ship: Dictionary, dest_cell: int, land_tile
 			return {"ok": false, "msg": "Нужна война, чтобы высадиться на чужую землю"}
 		if Dictionary(ship["cargo"]).is_empty():
 			land_tile = -1
+		elif st.unit_on.has(land_tile):
+			return {"ok": false, "msg": "На этой плитке уже стоят войска"}
 	if int(ship["cell"]) == dest_cell:
 		if land_tile >= 0:
 			ship["land_tile"] = land_tile

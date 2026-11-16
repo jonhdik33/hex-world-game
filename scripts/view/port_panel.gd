@@ -67,7 +67,7 @@ func rebuild(st, cid: int, sel: int) -> void:
 			var qd: Dictionary = q
 			if int(qd["type"]) == Navy.T_WAR:
 				wars += 1
-		var pb := _button("Порт %d: грузовых %d, боевых %d" % [n, here.size() - wars, wars], "select", -1, pi)
+		var pb := _button("Порт %d: десантных %d, боевых %d" % [n, here.size() - wars, wars], "select", -1, pi)
 		pb.toggle_mode = true
 		pb.set_pressed_no_signal(pi == t)
 		pb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -118,7 +118,7 @@ func rebuild(st, cid: int, sel: int) -> void:
 			var tg := Navy.bombard_targets(st, cid, sh)
 			for k in mini(tg.size(), 2):
 				btns.add_child(_button("Обстрелять", "bomb", id, int(tg[k])))
-		btns.add_child(_button("В плавание", "sail", id, t))
+		btns.add_child(_button("Выбрать корабль", "sail", id, t))
 		row.add_child(btns)
 		add_child(row)
 	if ships.size() > 0 and loadable.is_empty():

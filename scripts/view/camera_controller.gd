@@ -22,8 +22,8 @@ var _mouse_down: bool = false
 func fit_to(rect: Rect2) -> void:
 	world_rect = rect
 	var vp := get_viewport_rect().size
-	var z := minf(vp.x / rect.size.x, vp.y / rect.size.y)
-	min_zoom = z   # дальше отдалить нельзя: виден весь игровой мир, ни пикселя за его краем
+	var z := maxf(vp.x / rect.size.x, vp.y / rect.size.y)
+	min_zoom = z   # дальше отдалить нельзя: экран всегда заполнен картой, без чёрных полос по краям
 	max_zoom = z * 8.0
 	zoom = Vector2(z, z)
 	position = rect.get_center()

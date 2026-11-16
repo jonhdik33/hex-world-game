@@ -19,7 +19,7 @@ const AUTOSAVE_DAYS := 5
 const MASK_PATH := "res://assets/map_mask.png"
 const START_SEED := 12345
 # секунд реального времени на один игровой день; индекс = скорость (0 = пауза)
-const DAY_SECONDS: Array = [0.0, 5.0, 2.5, 1.2]
+const DAY_SECONDS: Array = [0.0, 8.0, 4.0, 2.5]
 # во сколько раз быстрее идут походы и бои (индекс = скорость)
 const ANIM_FACTOR: Array = [0.0, 1.0, 2.0, 3.0]
 
@@ -108,7 +108,9 @@ func _ready() -> void:
 func _process(delta: float) -> void:
 	if not playing or over or speed <= 0:
 		return
-	state.advance(delta * float(ANIM_FACTOR[speed]))
+	var adt: float = delta * float(ANIM_FACTOR[speed])
+	state.advance(adt)
+	Navy.advance(state, adt)
 	if state.events.size() > 0 or state.map_dirty or state.sounds.size() > 0:
 		_after_ticks()
 	_accum += delta
@@ -349,7 +351,7 @@ func _on_port_action(kind: String, ship_id: int, tile: int) -> void:
 		_sel_ship_id = ship_id
 		_ship_cell = int(ship["cell"])
 		_close_port()
-		hud.show_event("Нажмите на море, чтобы плыть, или на берег, чтобы высадиться")
+		hud.show_event("Корабль выбран: нажмите на море — плыть, на прибрежную плитку без войск — высадка")
 		return
 	units.refresh()
 	_refresh_hud()
@@ -410,7 +412,13 @@ func _try_move(from: int, to: int) -> void:
 		sfx.play("click")
 	units.refresh()
 	_refresh_hud()
-	_show_land_info(from)
+	if res["ok"]:
+		# приказ отдан: показываем плитку, на которую нажали (а не прежнюю)
+		_sel_land = to
+		map_view.select_land(to)
+		_show_land_info(to)
+	else:
+		_show_land_info(from)
 
 
 ## После дневных тиков: сообщения, изменения карты, интерфейс.
@@ -792,9 +800,9 @@ func _show_sea_info(j: int) -> void:
 		var sh: Dictionary = _own_ship_at(j)
 		if int(sh["type"]) == 0:
 			if Dictionary(sh["cargo"]).is_empty():
-				lines.append("Ваш транспорт (пустой)")
+				lines.append("Ваш десантный корабль (пустой)")
 			else:
-				lines.append("Ваш транспорт с дивизией")
+				lines.append("Ваш десантный корабль с дивизией")
 		if int(sh["type"]) == 1:
 			lines.append("Боевой корабль. Нажмите на море — плыть")
 			var acts: Array = []
@@ -802,5 +810,5 @@ func _show_sea_info(j: int) -> void:
 				acts.append({"id": "bomb_%d" % int(tg), "text": "Обстрелять вражескую дивизию", "enabled": true})
 			hud.set_actions(acts)
 		else:
-			lines.append("Нажмите на море — плыть, на берег — высадка")
+			lines.append("Нажмите на море — плыть, на любую прибрежную плитку — высадка")
 	hud.set_info("\n".join(lines))
