@@ -26,6 +26,7 @@ var hud: Hud
 
 var seed_value: int = START_SEED
 var playing: bool = false
+var over: bool = false        # игра закончена (победа/поражение), ждём «Новая игра»
 var speed: int = 1
 var _accum: float = 0.0
 var _picked: int = -1
@@ -67,12 +68,15 @@ func _ready() -> void:
 	hud.regen_pressed.connect(_on_regen)
 	hud.speed_selected.connect(_on_speed)
 	hud.action_pressed.connect(_on_action)
+	hud.production_changed.connect(_on_production)
+	hud.research_pressed.connect(_on_research)
+	hud.restart_pressed.connect(_on_restart)
 
 	_show_info_empty()
 
 
 func _process(delta: float) -> void:
-	if not playing or speed <= 0:
+	if not playing or over or speed <= 0:
 		return
 	state.advance(delta * float(ANIM_FACTOR[speed]))
 	if state.events.size() > 0 or state.map_dirty:
@@ -86,12 +90,14 @@ func _process(delta: float) -> void:
 		guard += 1
 	if guard > 0:
 		_after_ticks()
+	if state.game_over != 0:
+		_finish()
 
 
 # ---------- события ----------
 
 func _on_tapped(screen_pos: Vector2, world_pos: Vector2) -> void:
-	if hud.is_over_ui(screen_pos):
+	if over or hud.is_over_ui(screen_pos):
 		return
 	if not world.bounds().has_point(world_pos):
 		_clear_all()
@@ -154,6 +160,7 @@ func _on_confirm() -> void:
 	if _picked < 0:
 		return
 	state.player = _picked
+	state.mil_share[_picked] = GameState.DEFAULT_MIL_SHARE
 	playing = true
 	speed = 1
 	_accum = 0.0
@@ -194,9 +201,16 @@ func _on_action(id: String) -> void:
 	elif id == "war":
 		var o: int = world.tile_owner[t]
 		if o >= 0:
-			state.declare_war(cid, o)
 			var cn: Dictionary = world.countries[o]
-			hud.show_event("Война объявлена: %s" % cn["name"])
+			if state.declare_war(cid, o):
+				hud.show_event("Война объявлена: %s" % cn["name"])
+			else:
+				hud.show_event("Нельзя: недавно заключён мир")
+	elif id == "peace":
+		var o2: int = world.tile_owner[t]
+		if o2 >= 0:
+			var res: Dictionary = state.propose_peace(cid, o2)
+			hud.show_event(res["msg"])
 	_refresh_hud()
 	_show_land_info(t)
 
@@ -226,6 +240,52 @@ func _after_ticks() -> void:
 			_show_land_info(_sel_land)
 	units.refresh()
 	_refresh_hud()
+
+
+func _on_production(percent: int) -> void:
+	if playing and state.player >= 0:
+		state.mil_share[state.player] = float(percent) / 100.0
+		_refresh_hud()
+
+
+func _on_research(branch: int) -> void:
+	if not playing or state.player < 0:
+		return
+	if state.start_research(state.player, branch):
+		var nm: String = GameState.TECH_NAMES[branch]
+		hud.show_event("Начато исследование: %s" % nm)
+	_refresh_hud()
+
+
+## Игра закончена: победа или поражение.
+func _finish() -> void:
+	if over:
+		return
+	over = true
+	if state.game_over == 1:
+		hud.show_result("ПОБЕДА", "Вы присоединили все страны мира.")
+	else:
+		hud.show_result("ПОРАЖЕНИЕ", "Ваша столица захвачена, страна присоединена к победителю.")
+
+
+## «Новая игра»: новая карта и снова выбор страны.
+func _on_restart() -> void:
+	over = false
+	playing = false
+	seed_value += 1
+	WorldGen.assign_countries(world, seed_value)
+	state.reset()
+	_picked = -1
+	_sel_land = -1
+	_move_from = -1
+	map_view.set_player(-1)
+	units.set_player(-1)
+	map_view.clear_selection()
+	map_view.set_construction([])
+	map_view.refresh()
+	units.refresh()
+	hud.enter_pick()
+	_show_info_empty()
 
 
 func _on_regen() -> void:
@@ -266,6 +326,9 @@ func _refresh_hud() -> void:
 		state.format_date()
 	)
 	hud.set_balance_text(_balance_text(cid))
+	hud.set_countries_text(_countries_text())
+	_refresh_production(cid)
+	_refresh_research(cid)
 
 
 func _balance_text(cid: int) -> String:
@@ -282,6 +345,58 @@ func _balance_text(cid: int) -> String:
 	var nb := state.construction_tiles(cid).size()
 	if nb > 0:
 		lines.append("Строек: %d" % nb)
+	return "\n".join(lines)
+
+
+func _refresh_production(cid: int) -> void:
+	var m: float = state.mil_share[cid]
+	var pct := int(round(m * 100.0))
+	var text := "На армию: %d%% · на товары: %d%%\nСнаряжение: %s (+%s/день)\nНа дивизию нужно %d, нанять можно %d" % [
+		pct, 100 - pct, GameState.fmt(float(state.equipment[cid])),
+		"%.1f" % state.equip_per_day(cid), int(GameState.EQUIP_PER_DIVISION),
+		int(float(state.equipment[cid]) / GameState.EQUIP_PER_DIVISION)]
+	hud.set_production(pct, text)
+
+
+func _refresh_research(cid: int) -> void:
+	var cur: Dictionary = state.research[cid]
+	var status := "Исследований нет"
+	if not cur.is_empty():
+		var br: int = cur["branch"]
+		status = "Идёт: %s, ещё %d дн." % [GameState.TECH_NAMES[br], int(cur["days_left"])]
+	var list: Array = []
+	for b in 3:
+		var lvl := state.tech_level(cid, b)
+		var nm: String = GameState.TECH_NAMES[b]
+		var eff: String = GameState.TECH_EFFECT[b]
+		var bonus := int(round(float(GameState.TECH_BONUS[b]) * 100.0 * float(lvl)))
+		if lvl >= GameState.TECH_MAX:
+			list.append({"text": "%s %d (макс.): %s +%d%%" % [nm, lvl, eff, bonus], "enabled": false})
+		else:
+			var reason := state.research_block_reason(cid, b)
+			var t := "%s %d → %d: %s (%s)" % [nm, lvl, lvl + 1, eff, GameState.fmt(state.tech_cost(lvl))]
+			if reason == "Не хватает денег":
+				t += " — нет денег"
+			list.append({"text": t, "enabled": reason == ""})
+	hud.set_research(status, list)
+
+
+func _countries_text() -> String:
+	var ids: Array = []
+	for c in world.countries.size():
+		if int(world.countries[c]["tiles"]) > 0:
+			ids.append(c)
+	ids.sort_custom(func(a: int, b: int) -> bool: return int(world.countries[a]["tiles"]) > int(world.countries[b]["tiles"]))
+	var lines: Array[String] = []
+	for c in ids:
+		var ci: int = c
+		var cn: Dictionary = world.countries[ci]
+		var tag := ""
+		if ci == state.player:
+			tag = " (вы)"
+		elif state.is_at_war(state.player, ci):
+			tag = " [ВОЙНА]"
+		lines.append("%s%s: %d пл., %d див., %d зав.%s" % [cn["name"], tag, cn["tiles"], state.army[ci], cn["factories"], ""])
 	return "\n".join(lines)
 
 
@@ -328,11 +443,13 @@ func _update_actions(t: int) -> void:
 	var cid := state.player
 	var list: Array = []
 	if o != cid:
+		var cn: Dictionary = world.countries[o]
 		if state.is_at_war(cid, o):
-			list.append({"id": "none", "text": "Идёт война", "enabled": false})
-		else:
-			var cn: Dictionary = world.countries[o]
+			list.append({"id": "peace", "text": "Предложить мир: %s" % cn["name"], "enabled": true})
+		elif state.can_declare(cid, o):
 			list.append({"id": "war", "text": "Объявить войну: %s" % cn["name"], "enabled": true})
+		else:
+			list.append({"id": "none", "text": "Перемирие с %s" % cn["name"], "enabled": false})
 		hud.set_actions(list)
 		return
 	var reason := state.build_block_reason(cid, t)
@@ -348,6 +465,8 @@ func _update_actions(t: int) -> void:
 		var l2 := "Нанять дивизию (%s)" % GameState.fmt(GameState.RECRUIT_COST)
 		if r2 == "Не хватает денег":
 			l2 += " — нет денег"
+		elif r2 == "Не хватает снаряжения":
+			l2 += " — нет снаряжения"
 		list.append({"id": "recruit", "text": l2, "enabled": r2 == ""})
 	var u := state.unit_at(t)
 	if not u.is_empty():

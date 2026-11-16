@@ -42,6 +42,19 @@ static func _economy(st, cid: int, own: Array) -> void:
 		if best >= 0 and money - best_cost > BUILD_RESERVE:
 			st.start_build(cid, best)
 			money -= best_cost
+	# наука: берём самую слабую ветку, если денег с запасом
+	var cur: Dictionary = st.research[cid]
+	if cur.is_empty():
+		var br := -1
+		var lvl_best := 99
+		for b in 3:
+			var lv: int = st.tech_level(cid, b)
+			if lv < lvl_best and st.research_block_reason(cid, b) == "":
+				br = b
+				lvl_best = lv
+		if br >= 0 and money > st.tech_cost(lvl_best) + 6000.0:
+			st.start_research(cid, br)
+			money -= st.tech_cost(lvl_best)
 	# найм: только если казна выдержит содержание
 	var army: int = st.army[cid]
 	if net > st.division_upkeep() * 3.0 and money > RECRUIT_RESERVE and army < int(own.size() / 2):
@@ -75,6 +88,11 @@ static func _wars_count(st, cid: int) -> int:
 
 
 static func _war(st, cid: int, own: Array, aggr: float) -> void:
+	# мир: если война с другим ботом затянулась и он не слабее — заключаем
+	for o in st.world.countries.size():
+		if o != cid and o != st.player and st.is_at_war(cid, o) and st.war_days(cid, o) >= 30:
+			if int(st.army[cid]) <= int(st.army[o]) or st.rng.randf() < 0.25 * (1.0 - aggr):
+				st.make_peace(cid, o)
 	if st.day < 20 or _wars_count(st, cid) > 0:
 		return
 	if st.rng.randf() > aggr * 0.5:
@@ -93,7 +111,8 @@ static func _war(st, cid: int, own: Array, aggr: float) -> void:
 			target_army = a
 	if target < 0:
 		return
-	st.declare_war(cid, target)
+	if not st.declare_war(cid, target):
+		return
 	if target == st.player:
 		var cn: Dictionary = st.world.countries[cid]
 		st.events.append("%s объявила вам войну!" % cn["name"])

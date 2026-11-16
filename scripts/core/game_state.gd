@@ -34,7 +34,20 @@ const ST_MOVE := 1
 const ST_FIGHT := 2
 const MAX_HP := 100.0               # полная сила дивизии
 const HEAL_PER_DAY := 5.0            # лечение в день
-const DEFENSE_BONUS := 1.15          # защитник на своей земле сильнее
+const EQUIP_PER_FACTORY := 0.5       # снаряжения в день с одного завода при 100% на армию
+const EQUIP_PER_DIVISION := 10.0     # снаряжения на одну новую дивизию
+const START_EQUIP_DIVISIONS := 2.0   # стартовый запас снаряжения (в дивизиях)
+const DEFAULT_MIL_SHARE := 0.3       # доля заводов на армию по умолчанию
+const TRUCE_DAYS := 30               # после мира нельзя объявить войну заново
+const PEACE_MIN_WAR_DAYS := 10       # раньше этого срока бот мир не принимает
+
+# наука: три ветки по 3 уровня; платится деньгами, длится дни
+const TECH_NAMES: Array = ["Тактика", "Промышленность", "Снабжение"]
+const TECH_EFFECT: Array = ["сила дивизий", "доход заводов", "выпуск снаряжения"]
+const TECH_BONUS: Array = [0.10, 0.10, 0.15]      # прирост за уровень
+const TECH_COST: Array = [6000.0, 14000.0, 28000.0]
+const TECH_DAYS: Array = [15, 25, 35]
+const TECH_MAX := 3
 const WAIT_REROUTE := 3.0            # через сколько секунд ожидания искать обход
 const BOT_PERIOD := 3                # раз в сколько дней думает бот
 
@@ -55,6 +68,13 @@ var squads: Array = []        # все дивизии (см. раздел «ар
 var unit_on: Dictionary = {}  # плитка -> дивизия
 var rng := RandomNumberGenerator.new()
 var bot_aggr: Array = []      # агрессивность бота 0..1
+var mil_share: Array = []     # доля заводов, работающих на армию (0..1)
+var equipment: Array = []     # запас снаряжения
+var tech: Array = []          # уровни науки: tech[cid] = [тактика, промышленность, снабжение]
+var research: Array = []      # текущее исследование: {} или {branch, days_left}
+var war_since: Dictionary = {} # ключ пары -> день начала войны
+var truce: Dictionary = {}     # ключ пары -> день, до которого нельзя объявлять войну
+var game_over: int = 0         # 0 игра идёт, 1 победа, 2 поражение
 var at_war: Dictionary = {}   # пары стран в состоянии войны: min*1000+max
 var _next_id: int = 1
 var build_queue: Array = []   # стройки: [{cid, tile, days_left, new_city}]
@@ -84,9 +104,21 @@ func reset() -> void:
 	for cid in world.countries.size():
 		money[cid] = maxf(0.0, daily_net(cid)) * START_MONEY_DAYS
 	rng.seed = 424242
+	game_over = 0
+	war_since = {}
+	truce = {}
 	bot_aggr = []
+	mil_share = []
+	equipment = []
+	tech = []
+	research = []
 	for c in world.countries.size():
-		bot_aggr.append(rng.randf_range(0.2, 1.0))
+		var ag := rng.randf_range(0.2, 1.0)
+		bot_aggr.append(ag)
+		mil_share.append(0.2 + 0.4 * ag)
+		equipment.append(EQUIP_PER_DIVISION * START_EQUIP_DIVISIONS)
+		tech.append([0, 0, 0])
+		research.append({})
 	_place_armies()
 
 
@@ -96,7 +128,8 @@ func reset() -> void:
 func budget(cid: int) -> Dictionary:
 	var cn: Dictionary = world.countries[cid]
 	var tax := float(population[cid]) * TAX_PER_PERSON
-	var industry := float(cn["factories"]) * INCOME_PER_FACTORY
+	var civ := 1.0 - float(mil_share[cid])
+	var industry := float(cn["factories"]) * INCOME_PER_FACTORY * civ * (1.0 + float(TECH_BONUS[1]) * float(tech_level(cid, 1)))
 	var up_f := float(cn["factories"]) * FACTORY_UPKEEP
 	var up_c := float(cn["cities"]) * CITY_UPKEEP
 	var up_a := float(army[cid]) * DIVISION_UPKEEP
@@ -114,6 +147,17 @@ func budget(cid: int) -> Dictionary:
 	}
 
 
+func tech_level(cid: int, branch: int) -> int:
+	var t: Array = tech[cid]
+	return int(t[branch])
+
+
+## Снаряжение в день.
+func equip_per_day(cid: int) -> float:
+	var cn: Dictionary = world.countries[cid]
+	return float(cn["factories"]) * float(mil_share[cid]) * EQUIP_PER_FACTORY * (1.0 + float(TECH_BONUS[2]) * float(tech_level(cid, 2)))
+
+
 func daily_net(cid: int) -> float:
 	var b: Dictionary = budget(cid)
 	return float(b["net"])
@@ -123,6 +167,8 @@ func tick_day() -> void:
 	for cid in world.countries.size():
 		money[cid] = float(money[cid]) + daily_net(cid)
 		population[cid] = float(population[cid]) * (1.0 + POP_GROWTH_PER_DAY)
+		equipment[cid] = float(equipment[cid]) + equip_per_day(cid)
+		_progress_research(cid)
 		# нет денег — распускаем по одной дивизии в день, пока казна не выйдет из минуса
 		if float(money[cid]) < 0.0 and int(army[cid]) > 0:
 			_remove_one_division(cid)
@@ -186,7 +232,7 @@ func _place_armies() -> void:
 func _add_unit(cid: int, t: int) -> Dictionary:
 	var e := {
 		"id": _next_id, "owner": cid, "tile": t, "from": t, "hp": MAX_HP, "path": [], "dest": -1,
-		"p": 0.0, "crossed": false, "state": ST_IDLE, "recover": 0, "fight_t": 0.0, "wait_t": 0.0,
+		"p": 0.0, "crossed": false, "state": ST_IDLE, "recover": 0, "fight_t": 0.0, "wait_t": 0.0, "dead": false,
 	}
 	_next_id += 1
 	squads.append(e)
@@ -226,6 +272,7 @@ func division_upkeep() -> float:
 
 
 func _remove_unit(e: Dictionary) -> void:
+	e["dead"] = true
 	squads.erase(e)
 	if unit_on.has(int(e["tile"])):
 		var cur: Dictionary = unit_on[int(e["tile"])]
@@ -256,6 +303,8 @@ func recruit_block_reason(cid: int, t: int) -> String:
 		return "Клетка занята дивизией"
 	if float(money[cid]) < RECRUIT_COST:
 		return "Не хватает денег"
+	if float(equipment[cid]) < EQUIP_PER_DIVISION:
+		return "Не хватает снаряжения"
 	return ""
 
 
@@ -263,6 +312,7 @@ func recruit(cid: int, t: int) -> bool:
 	if recruit_block_reason(cid, t) != "":
 		return false
 	money[cid] = float(money[cid]) - RECRUIT_COST
+	equipment[cid] = float(equipment[cid]) - EQUIP_PER_DIVISION
 	_add_unit(cid, t)
 	_rebuild()
 	return true
@@ -289,9 +339,47 @@ func is_at_war(a: int, b: int) -> bool:
 	return at_war.has(mini(a, b) * 1000 + maxi(a, b))
 
 
-func declare_war(a: int, b: int) -> void:
-	if a != b and a >= 0 and b >= 0:
-		at_war[mini(a, b) * 1000 + maxi(a, b)] = true
+func _pair(a: int, b: int) -> int:
+	return mini(a, b) * 1000 + maxi(a, b)
+
+
+func can_declare(a: int, b: int) -> bool:
+	if a == b or a < 0 or b < 0 or is_at_war(a, b):
+		return false
+	return not (truce.has(_pair(a, b)) and int(truce[_pair(a, b)]) > day)
+
+
+func declare_war(a: int, b: int) -> bool:
+	if not can_declare(a, b):
+		return false
+	at_war[_pair(a, b)] = true
+	war_since[_pair(a, b)] = day
+	return true
+
+
+func war_days(a: int, b: int) -> int:
+	if not war_since.has(_pair(a, b)):
+		return 0
+	return day - int(war_since[_pair(a, b)])
+
+
+func make_peace(a: int, b: int) -> void:
+	at_war.erase(_pair(a, b))
+	war_since.erase(_pair(a, b))
+	truce[_pair(a, b)] = day + TRUCE_DAYS
+
+
+## Игрок предлагает мир боту. Бот соглашается, если война длится не меньше PEACE_MIN_WAR_DAYS
+## и он не заметно сильнее игрока по числу дивизий.
+func propose_peace(cid: int, other: int) -> Dictionary:
+	if not is_at_war(cid, other):
+		return {"ok": false, "msg": "Войны нет"}
+	if war_days(cid, other) < PEACE_MIN_WAR_DAYS:
+		return {"ok": false, "msg": "Рано: война только началась"}
+	if float(army[other]) > float(army[cid]) * 1.3 + 1.0:
+		return {"ok": false, "msg": "Противник отказался от мира"}
+	make_peace(cid, other)
+	return {"ok": true, "msg": "Мир заключён"}
 
 
 ## Можно ли дивизии страны cid войти на плитку t: своя или страна, с которой война.
@@ -392,6 +480,8 @@ func advance(dt: float) -> void:
 		return
 	for sq in squads.duplicate():
 		var e: Dictionary = sq
+		if bool(e["dead"]):
+			continue
 		var st: int = e["state"]
 		if st == ST_IDLE or int(e["recover"]) > 0:
 			continue
@@ -472,9 +562,13 @@ func _resolve_battle(e: Dictionary) -> void:
 		_capture(att, def, target)
 		e["crossed"] = true
 		return
-	var a_pow := float(e["hp"]) * rng.randf_range(0.8, 1.2)
-	var d_pow := float(d["hp"]) * rng.randf_range(0.8, 1.2) * DEFENSE_BONUS
-	if a_pow > d_pow:
+	# равные условия: одинаковый разброс и одинаковый бонус науки у обеих сторон
+	var a_pow := float(e["hp"]) * rng.randf_range(0.8, 1.2) * (1.0 + float(TECH_BONUS[0]) * float(tech_level(att, 0)))
+	var d_pow := float(d["hp"]) * rng.randf_range(0.8, 1.2) * (1.0 + float(TECH_BONUS[0]) * float(tech_level(def, 0)))
+	var attacker_wins := a_pow > d_pow
+	if a_pow == d_pow:
+		attacker_wins = rng.randf() < 0.5
+	if attacker_wins:
 		# победа: защитник уничтожен, победитель ранен и отдыхает, плитка захвачена
 		_remove_unit(d)
 		e["hp"] = maxf(10.0, float(e["hp"]) - float(d["hp"]) * 0.35)
@@ -483,7 +577,7 @@ func _resolve_battle(e: Dictionary) -> void:
 		_capture(att, def, target)
 		_note(att, def, "Плитка захвачена")
 	else:
-		# поражение (при равенстве выигрывает защитник): атакующий уничтожен
+		# поражение: атакующий уничтожен
 		d["hp"] = maxf(10.0, float(d["hp"]) - float(e["hp"]) * 0.35)
 		d["recover"] = RECOVER_DAYS
 		_remove_unit(e)
@@ -500,6 +594,9 @@ func _note(att: int, def: int, text: String) -> void:
 func _capture(att: int, def: int, t: int) -> void:
 	var da: Dictionary = world.countries[att]
 	var dd: Dictionary = world.countries[def]
+	if int(dd["capital"]) == t:
+		_annex(att, def)
+		return
 	# население переходит вместе с плиткой
 	var tiles_def := maxi(1, int(dd["tiles"]))
 	var pop_move := float(population[def]) / float(tiles_def)
@@ -528,12 +625,104 @@ func _capture(att: int, def: int, t: int) -> void:
 			var o: Dictionary = sq
 			if int(o["owner"]) != def:
 				rest.append(o)
+			else:
+				o["dead"] = true
 		squads = rest
 		_rebuild()
 		if def == player:
 			events.append("Ваша страна потеряла все земли")
 		else:
 			events.append("Страна уничтожена: %s" % dd["name"])
+
+
+## Столица взята: вся страна присоединяется к победителю (земли, города, заводы, люди; цвет — победителя).
+func _annex(att: int, def: int) -> void:
+	var da: Dictionary = world.countries[att]
+	var dd: Dictionary = world.countries[def]
+	for i in world.tile_total():
+		if world.land[i] == 1 and world.tile_owner[i] == def:
+			world.tile_owner[i] = att
+	da["tiles"] = int(da["tiles"]) + int(dd["tiles"])
+	da["factories"] = int(da["factories"]) + int(dd["factories"])
+	da["cities"] = int(da["cities"]) + int(dd["cities"])
+	population[att] = float(population[att]) + float(population[def])
+	var cap: int = dd["capital"]
+	world.tile_city[cap] = 1   # бывшая столица — обычный город, звезда одна
+	dd["tiles"] = 0
+	dd["factories"] = 0
+	dd["cities"] = 0
+	population[def] = 0.0
+	money[def] = 0.0
+	var rest: Array = []
+	for sq in squads:
+		var o: Dictionary = sq
+		if int(o["owner"]) != def:
+			rest.append(o)
+		else:
+			o["dead"] = true
+	squads = rest
+	var q: Array = []
+	for b in build_queue:
+		if int(b["cid"]) != def:
+			q.append(b)
+	build_queue = q
+	_rebuild()
+	map_dirty = true
+	if att == player:
+		events.append("Столица взята! %s присоединена к вам" % dd["name"])
+		var alive := 0
+		for c in world.countries.size():
+			if c != player and int(world.countries[c]["tiles"]) > 0:
+				alive += 1
+		if alive == 0:
+			game_over = 1
+	elif def == player:
+		events.append("Ваша столица пала: %s" % da["name"])
+		game_over = 2
+	else:
+		events.append("%s присоединила страну %s" % [da["name"], dd["name"]])
+
+
+# ---------- наука ----------
+
+func tech_cost(level: int) -> float:
+	return float(TECH_COST[clampi(level, 0, TECH_MAX - 1)])
+
+
+func research_block_reason(cid: int, branch: int) -> String:
+	var lvl := tech_level(cid, branch)
+	if lvl >= TECH_MAX:
+		return "Максимальный уровень"
+	var cur: Dictionary = research[cid]
+	if not cur.is_empty():
+		return "Идёт другое исследование"
+	if float(money[cid]) < float(TECH_COST[lvl]):
+		return "Не хватает денег"
+	return ""
+
+
+func start_research(cid: int, branch: int) -> bool:
+	if research_block_reason(cid, branch) != "":
+		return false
+	var lvl := tech_level(cid, branch)
+	money[cid] = float(money[cid]) - float(TECH_COST[lvl])
+	research[cid] = {"branch": branch, "days_left": int(TECH_DAYS[lvl])}
+	return true
+
+
+func _progress_research(cid: int) -> void:
+	var cur: Dictionary = research[cid]
+	if cur.is_empty():
+		return
+	cur["days_left"] = int(cur["days_left"]) - 1
+	if int(cur["days_left"]) > 0:
+		return
+	var br: int = cur["branch"]
+	var t: Array = tech[cid]
+	t[br] = int(t[br]) + 1
+	research[cid] = {}
+	if cid == player:
+		events.append("Исследование завершено: %s %d" % [TECH_NAMES[br], int(t[br])])
 
 
 # ---------- стройка ----------

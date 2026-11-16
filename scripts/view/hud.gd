@@ -1,32 +1,28 @@
 extends CanvasLayer
-## Интерфейс: верхняя панель, подсказка, окно выбора страны, информация о плитке,
-## кнопки скорости. Всё собирается кодом, оформление своё (тёмно-синие панели).
-## Наружу общается только сигналами и set_* методами.
+## Интерфейс: верхняя панель, меню справа (Баланс, Страны, Производство, Наука), подсказка,
+## выбор страны, информация о плитке с кнопками действий, скорость, сообщения, итоговый экран.
+## Всё собирается кодом. Наружу общается только сигналами и set_* методами.
 
 signal confirm_pressed
 signal regen_pressed
 signal speed_selected(speed: int)
 signal action_pressed(id: String)
+signal production_changed(percent: int)
+signal research_pressed(branch: int)
+signal restart_pressed
 
 const GameState = preload("res://scripts/core/game_state.gd")
 
 const FONT := 22
-const ACTION_SLOTS := 5
 const SPEED_NAMES: Array = ["Пауза", "x1", "x2", "x3"]
+const ACTION_SLOTS := 5
+const MENU_NAMES: Array = ["Баланс", "Страны", "Производство", "Наука"]
 
 var _top_bar: PanelContainer
 var _lbl_money: Label
 var _lbl_fact: Label
 var _lbl_army: Label
 var _lbl_pop: Label
-var _balance_btn: Button
-var _balance_panel: PanelContainer
-var _balance_label: Label
-var _action_btns: Array = []
-var _action_ids: Array = []
-var _toast: PanelContainer
-var _toast_label: Label
-var _toast_token: int = 0
 var _lbl_date: Label
 var _hint_panel: PanelContainer
 var _info_panel: PanelContainer
@@ -36,6 +32,23 @@ var _pick_label: Label
 var _regen_btn: Button
 var _speed_box: HBoxContainer
 var _speed_buttons: Array = []
+var _action_btns: Array = []
+var _action_ids: Array = []
+var _menu_row: HBoxContainer
+var _menu_btns: Array = []
+var _menu_panels: Array = []
+var _balance_label: Label
+var _countries_label: Label
+var _prod_label: Label
+var _prod_slider: HSlider
+var _res_label: Label
+var _res_btns: Array = []
+var _toast: PanelContainer
+var _toast_label: Label
+var _toast_token: int = 0
+var _result_panel: PanelContainer
+var _result_title: Label
+var _result_text: Label
 var _blockers: Array = []
 
 
@@ -81,7 +94,7 @@ func _build() -> void:
 	_regen_btn.offset_top = 8.0
 	_regen_btn.pressed.connect(func(): regen_pressed.emit())
 
-	# --- информация о плитке (слева внизу) ---
+	# --- информация о плитке и кнопки действий (слева внизу) ---
 	_info_panel = _make_panel()
 	add_child(_info_panel)
 	_info_panel.anchor_top = 1.0
@@ -102,37 +115,6 @@ func _build() -> void:
 		ibox.add_child(ab)
 		_action_btns.append(ab)
 		_action_ids.append("")
-
-	# --- баланс (кнопка и окно слева сверху, во время игры) ---
-	_balance_btn = Button.new()
-	_balance_btn.text = "Баланс"
-	_balance_btn.toggle_mode = true
-	_balance_btn.add_theme_font_size_override("font_size", FONT)
-	add_child(_balance_btn)
-	_balance_btn.offset_left = 8.0
-	_balance_btn.offset_top = 76.0
-	_balance_btn.offset_right = 160.0
-	_balance_btn.toggled.connect(func(on: bool): _balance_panel.visible = on)
-	_balance_btn.visible = false
-	_balance_panel = _make_panel()
-	add_child(_balance_panel)
-	_balance_panel.offset_left = 8.0
-	_balance_panel.offset_top = 132.0
-	_balance_label = _plain_label("", Color(0.92, 0.95, 1.0))
-	_balance_label.custom_minimum_size = Vector2(380, 0)
-	_balance_panel.add_child(_balance_label)
-	_balance_panel.visible = false
-
-	# --- всплывающее сообщение (по центру сверху, во время игры) ---
-	_toast = _make_panel()
-	add_child(_toast)
-	_toast.anchor_left = 0.5
-	_toast.anchor_right = 0.5
-	_toast.offset_top = 76.0
-	_toast.grow_horizontal = Control.GROW_DIRECTION_BOTH
-	_toast_label = _plain_label("", Color(1.0, 0.92, 0.6))
-	_toast.add_child(_toast_label)
-	_toast.visible = false
 
 	# --- окно выбора страны (по центру внизу) ---
 	_pick_panel = _make_panel()
@@ -178,7 +160,141 @@ func _build() -> void:
 		_speed_buttons.append(b)
 	_speed_box.visible = false
 
-	_blockers = [_top_bar, _hint_panel, _regen_btn, _info_panel, _pick_panel, _speed_box, _balance_btn, _balance_panel]
+	_build_menu()
+
+	# --- всплывающее сообщение ---
+	_toast = _make_panel()
+	add_child(_toast)
+	_toast.anchor_left = 0.5
+	_toast.anchor_right = 0.5
+	_toast.offset_top = 76.0
+	_toast.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	_toast_label = _plain_label("", Color(1.0, 0.92, 0.6))
+	_toast.add_child(_toast_label)
+	_toast.visible = false
+
+	# --- итоговый экран: победа / поражение ---
+	_result_panel = _make_panel()
+	add_child(_result_panel)
+	_result_panel.anchor_left = 0.5
+	_result_panel.anchor_right = 0.5
+	_result_panel.anchor_top = 0.5
+	_result_panel.anchor_bottom = 0.5
+	_result_panel.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	_result_panel.grow_vertical = Control.GROW_DIRECTION_BOTH
+	var rbox := VBoxContainer.new()
+	_result_panel.add_child(rbox)
+	_result_title = _plain_label("", Color(1.0, 0.9, 0.4))
+	_result_title.add_theme_font_size_override("font_size", 40)
+	_result_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	rbox.add_child(_result_title)
+	_result_text = _plain_label("", Color(1, 1, 1))
+	_result_text.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_result_text.custom_minimum_size = Vector2(420, 0)
+	_result_text.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	rbox.add_child(_result_text)
+	var again := Button.new()
+	again.text = "Новая игра"
+	again.add_theme_font_size_override("font_size", FONT)
+	again.pressed.connect(func(): restart_pressed.emit())
+	rbox.add_child(again)
+	_result_panel.visible = false
+
+	_blockers = [_top_bar, _hint_panel, _regen_btn, _info_panel, _pick_panel, _speed_box,
+		_menu_row, _result_panel]
+	for p in _menu_panels:
+		_blockers.append(p)
+
+
+## Меню справа сверху: четыре кнопки-переключателя и четыре окна (открыто не больше одного).
+func _build_menu() -> void:
+	_menu_row = HBoxContainer.new()
+	add_child(_menu_row)
+	_menu_row.anchor_left = 1.0
+	_menu_row.anchor_right = 1.0
+	_menu_row.offset_right = -8.0
+	_menu_row.offset_top = 76.0
+	_menu_row.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+	for n in MENU_NAMES.size():
+		var b := Button.new()
+		b.text = MENU_NAMES[n]
+		b.toggle_mode = true
+		b.add_theme_font_size_override("font_size", 20)
+		b.toggled.connect(_on_menu_toggled.bind(n))
+		_menu_row.add_child(b)
+		_menu_btns.append(b)
+		var p := _make_panel()
+		add_child(p)
+		p.anchor_left = 1.0
+		p.anchor_right = 1.0
+		p.offset_right = -8.0
+		p.offset_top = 132.0
+		p.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+		p.visible = false
+		_menu_panels.append(p)
+	_menu_row.visible = false
+
+	# 0 Баланс
+	_balance_label = _plain_label("", Color(0.92, 0.95, 1.0))
+	_balance_label.custom_minimum_size = Vector2(400, 0)
+	var p0: PanelContainer = _menu_panels[0]
+	p0.add_child(_balance_label)
+
+	# 1 Страны (прокрутка)
+	var scroll := ScrollContainer.new()
+	scroll.custom_minimum_size = Vector2(440, 330)
+	_countries_label = _plain_label("", Color(0.92, 0.95, 1.0))
+	scroll.add_child(_countries_label)
+	var p1: PanelContainer = _menu_panels[1]
+	p1.add_child(scroll)
+
+	# 2 Производство
+	var pbox := VBoxContainer.new()
+	_prod_label = _plain_label("", Color(0.92, 0.95, 1.0))
+	_prod_label.custom_minimum_size = Vector2(420, 0)
+	pbox.add_child(_prod_label)
+	_prod_slider = HSlider.new()
+	_prod_slider.min_value = 0
+	_prod_slider.max_value = 100
+	_prod_slider.step = 5
+	_prod_slider.custom_minimum_size = Vector2(420, 40)
+	_prod_slider.value_changed.connect(func(v: float): production_changed.emit(int(v)))
+	pbox.add_child(_prod_slider)
+	var p2: PanelContainer = _menu_panels[2]
+	p2.add_child(pbox)
+
+	# 3 Наука
+	var rbox := VBoxContainer.new()
+	_res_label = _plain_label("", Color(0.92, 0.95, 1.0))
+	_res_label.custom_minimum_size = Vector2(420, 0)
+	rbox.add_child(_res_label)
+	for n in 3:
+		var rb := Button.new()
+		rb.add_theme_font_size_override("font_size", FONT)
+		rb.pressed.connect(func(): research_pressed.emit(n))
+		rbox.add_child(rb)
+		_res_btns.append(rb)
+	var p3: PanelContainer = _menu_panels[3]
+	p3.add_child(rbox)
+
+
+func _on_menu_toggled(on: bool, index: int) -> void:
+	for n in _menu_panels.size():
+		var p: PanelContainer = _menu_panels[n]
+		var b: Button = _menu_btns[n]
+		if n == index:
+			p.visible = on
+		elif on:
+			p.visible = false
+			b.set_pressed_no_signal(false)
+
+
+func _close_menu() -> void:
+	for n in _menu_panels.size():
+		var p: PanelContainer = _menu_panels[n]
+		var b: Button = _menu_btns[n]
+		p.visible = false
+		b.set_pressed_no_signal(false)
 
 
 # ---------- публичный интерфейс ----------
@@ -203,7 +319,20 @@ func enter_play() -> void:
 	_pick_panel.visible = false
 	_top_bar.visible = true
 	_speed_box.visible = true
-	_balance_btn.visible = true
+	_menu_row.visible = true
+
+
+## Возврат к выбору страны (новая игра).
+func enter_pick() -> void:
+	_hint_panel.visible = true
+	_regen_btn.visible = true
+	_pick_panel.visible = false
+	_top_bar.visible = false
+	_speed_box.visible = false
+	_menu_row.visible = false
+	_result_panel.visible = false
+	_close_menu()
+	set_actions([])
 
 
 func set_resources(money: float, net: float, factories: int, army: int, pop: float, date_text: String) -> void:
@@ -222,7 +351,38 @@ func set_balance_text(text: String) -> void:
 	_balance_label.text = text
 
 
-## Кнопки действий под информацией о плитке. Каждое действие: {"id": "...", "text": "...", "enabled": bool}.
+func set_countries_text(text: String) -> void:
+	_countries_label.text = text
+
+
+## Окно производства: percent = доля заводов на армию.
+func set_production(percent: int, text: String) -> void:
+	_prod_label.text = text
+	_prod_slider.set_value_no_signal(float(percent))
+
+
+## Окно науки: status — текст, list — три кнопки {text, enabled}.
+func set_research(status: String, list: Array) -> void:
+	_res_label.text = status
+	for n in _res_btns.size():
+		var b: Button = _res_btns[n]
+		if n < list.size():
+			var d: Dictionary = list[n]
+			b.text = d["text"]
+			b.disabled = not bool(d["enabled"])
+
+
+func show_result(title: String, text: String) -> void:
+	_result_title.text = title
+	_result_text.text = text
+	_result_panel.visible = true
+
+
+func hide_result() -> void:
+	_result_panel.visible = false
+
+
+## Кнопки действий под информацией о плитке. Каждое: {"id": "...", "text": "...", "enabled": bool}.
 func set_actions(list: Array) -> void:
 	for n in ACTION_SLOTS:
 		var b: Button = _action_btns[n]
@@ -235,12 +395,6 @@ func set_actions(list: Array) -> void:
 		else:
 			_action_ids[n] = ""
 			b.visible = false
-
-
-func _on_action_pressed(n: int) -> void:
-	var id: String = _action_ids[n]
-	if id != "":
-		action_pressed.emit(id)
 
 
 func show_event(text: String) -> void:
@@ -272,6 +426,12 @@ func is_over_ui(screen_pos: Vector2) -> bool:
 
 
 # ---------- внутреннее ----------
+
+func _on_action_pressed(n: int) -> void:
+	var id: String = _action_ids[n]
+	if id != "":
+		action_pressed.emit(id)
+
 
 func _on_speed_pressed(speed: int) -> void:
 	speed_selected.emit(speed)
