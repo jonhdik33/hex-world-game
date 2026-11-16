@@ -38,7 +38,7 @@ func _process(_delta: float) -> void:
 			return
 	for sh in state.ships:
 		var shd: Dictionary = sh
-		if int(shd["state"]) == 1:
+		if int(shd["state"]) == 1 or int(shd["bomb"]) >= 0:
 			queue_redraw()
 			return
 
@@ -157,6 +157,8 @@ func _draw() -> void:
 	for sh in state.ships:
 		var shd: Dictionary = sh
 		var pos2 := _ship_pos(shd)
+		if int(shd["state"]) == 0:
+			pos2 += Vector2(float(int(shd["id"]) % 3 - 1) * s * 1.6, 0.0)   # корабли в одной ячейке не слипаются
 		var pth: Array = shd["path"]
 		if int(shd["state"]) == 1 and int(shd["owner"]) == player_country and pth.size() >= 1:
 			var prev2 := pos2
@@ -164,7 +166,13 @@ func _draw() -> void:
 				var np: Vector2 = world.sea_anchor[int(c)]
 				draw_dashed_line(prev2, np, Color(1, 1, 1, 0.5), 2.0, 5.0)
 				prev2 = np
-		_boat(pos2, s, _owner_color(int(shd["owner"])), not Dictionary(shd["cargo"]).is_empty(), String(shd.get("type", "cargo")) == "battle")
+		_boat(pos2, s, _owner_color(int(shd["owner"])), not Dictionary(shd["cargo"]).is_empty(), int(shd["type"]) == 1)
+		if int(shd["bomb"]) >= 0:
+			var tp := world.center_of(int(shd["bomb"]))
+			var ph := fmod(float(Time.get_ticks_msec()) / 150.0, 1.0)
+			draw_line(pos2, tp, Color(1.0, 0.6, 0.2, 0.8), 2.0)
+			draw_circle(pos2.lerp(tp, ph), s * 0.18, Color(1.0, 0.9, 0.4))
+			_draw_clash(tp, float(Time.get_ticks_msec()) / 1000.0, s)
 
 
 func _ship_pos(sh: Dictionary) -> Vector2:
@@ -176,21 +184,24 @@ func _ship_pos(sh: Dictionary) -> Vector2:
 	return a
 
 
-func _boat(c: Vector2, s: float, col: Color, loaded: bool, battle: bool = false) -> void:
+func _boat(c: Vector2, s: float, col: Color, loaded: bool, war: bool = false) -> void:
 	var dark := Color(0.05, 0.05, 0.1, 0.95)
 	var hull := PackedVector2Array([c + Vector2(-0.8, 0.0) * s, c + Vector2(0.8, 0.0) * s,
 		c + Vector2(0.5, 0.45) * s, c + Vector2(-0.5, 0.45) * s])
 	draw_colored_polygon(hull, dark)
 	var hull_in := PackedVector2Array([c + Vector2(-0.68, 0.05) * s, c + Vector2(0.68, 0.05) * s,
 		c + Vector2(0.44, 0.36) * s, c + Vector2(-0.44, 0.36) * s])
-	draw_colored_polygon(hull_in, Color(0.85, 0.85, 0.9))
+	var hull_col := Color(0.85, 0.85, 0.9)
+	if war:
+		hull_col = Color(0.5, 0.55, 0.62)
+	draw_colored_polygon(hull_in, hull_col)
+	if war:
+		draw_line(c + Vector2(-0.1, 0.1) * s, c + Vector2(0.8, -0.2) * s, dark, 0.14 * s)
+		draw_circle(c + Vector2(-0.1, 0.1) * s, 0.2 * s, dark)
 	draw_line(c + Vector2(0.0, 0.0) * s, c + Vector2(0.0, -0.8) * s, dark, 0.1 * s)
 	draw_colored_polygon(PackedVector2Array([c + Vector2(0.0, -0.8) * s, c + Vector2(0.55, -0.55) * s, c + Vector2(0.0, -0.3) * s]), col)
 	if loaded:
 		draw_circle(c + Vector2(-0.35, -0.1) * s, 0.16 * s, Color(0.4, 1.0, 0.5))
-	if battle:
-		draw_circle(c + Vector2(0.25, 0.12) * s, 0.18 * s, Color(0.25, 0.28, 0.35))
-		draw_line(c + Vector2(0.25, 0.12) * s, c + Vector2(0.72, -0.02) * s, dark, 0.12 * s)
 
 
 func _draw_clash(mid: Vector2, t: float, s: float) -> void:

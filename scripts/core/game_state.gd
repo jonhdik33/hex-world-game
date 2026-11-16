@@ -113,6 +113,8 @@ func reset() -> void:
 		population.append(float(cn["tiles"]) * POP_PER_TILE)
 		army.append(maxi(1, int(round(float(cn["tiles"]) / ARMY_TILES_PER_DIVISION))))
 		money.append(0.0)
+	for cid in world.countries.size():
+		money[cid] = maxf(0.0, daily_net(cid)) * START_MONEY_DAYS
 	rng.seed = 424242
 	game_over = 0
 	war_since = {}
@@ -142,10 +144,6 @@ func reset() -> void:
 	_place_armies()
 	Navy.give_start_ships(self)
 	_rebuild()
-	# Стартовая казна рассчитывается только после инициализации экономики,
-	# армии, технологий и флота.
-	for cid in world.countries.size():
-		money[cid] = maxf(0.0, daily_net(cid)) * START_MONEY_DAYS
 
 
 # ---------- экономика ----------
@@ -159,7 +157,7 @@ func budget(cid: int) -> Dictionary:
 	var up_f := float(cn["factories"]) * FACTORY_UPKEEP
 	var up_c := float(cn["cities"]) * CITY_UPKEEP
 	var up_a := float(army[cid]) * DIVISION_UPKEEP
-	var up_s := float(Navy.count_of(self, cid)) * Navy.SHIP_UPKEEP
+	var up_s := Navy.upkeep(self, cid)
 	var income := tax + industry
 	var expenses := up_f + up_c + up_a + up_s
 	return {

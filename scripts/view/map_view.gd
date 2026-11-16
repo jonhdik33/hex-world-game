@@ -6,6 +6,7 @@ extends Node2D
 
 const World = preload("res://scripts/core/world.gd")
 const OutlineView = preload("res://scripts/view/outline_view.gd")
+const Layer = preload("res://scripts/view/layer.gd")
 
 const FRAME_COLOR := Color(0.02, 0.05, 0.11)   # как фон за краем мира
 const SEA_BASE := Color(0.11, 0.31, 0.57)
@@ -30,6 +31,19 @@ var _mid := PackedVector2Array()     # середины береговых ст�
 var _mid_ok := PackedByteArray()     # 1 = у стороны k есть середина (она береговая)
 var _poly: Array = []                # готовый многоугольник каждой плитки суши
 var _construction: Array = []        # плитки со стройкой (жёлтое кольцо)
+var _sea_layer: Node2D               # море (рисуется один раз)
+var _land_mesh: MeshInstance2D       # суша одной сеткой: смена цвета плитки = обновление цветов, без перерисовки
+var _top_layer: Node2D               # границы, города, порты, стройки, рамка
+var _mesh := ArrayMesh.new()
+var _mv := PackedVector2Array()      # вершины сетки суши
+var _mi := PackedInt32Array()        # индексы треугольников
+var _mc := PackedColorArray()        # цвета вершин
+var _mstart := PackedInt32Array()    # первая вершина каждой плитки
+var _mcount := PackedInt32Array()    # число вершин плитки
+var _coast := PackedVector2Array()   # линии берега (не меняются)
+var _border := PackedVector2Array()  # границы стран
+var _grid := PackedVector2Array()    # сетка внутри страны
+var _mine := PackedVector2Array()    # граница страны игрока
 
 
 func setup(w: World) -> void:
@@ -41,6 +55,19 @@ func setup(w: World) -> void:
 	for k in 6:
 		_sea_off.append(world.sea_grid.corner_off(k))
 	_build_geometry()
+	_build_mesh()
+	_sea_layer = Layer.new()
+	_sea_layer.painter = _paint_sea
+	add_child(_sea_layer)
+	_land_mesh = MeshInstance2D.new()
+	_land_mesh.mesh = _mesh
+	_land_mesh.z_index = 1
+	add_child(_land_mesh)
+	_top_layer = Layer.new()
+	_top_layer.painter = _paint_top
+	_top_layer.z_index = 2
+	add_child(_top_layer)
+	_update_dynamic()
 	_highlight = Line2D.new()
 	_highlight.width = 3.0
 	_highlight.default_color = Color(1, 1, 1, 0.95)
@@ -52,21 +79,21 @@ func setup(w: World) -> void:
 	_sea_outline.z_index = 10
 	_sea_outline.visible = false
 	add_child(_sea_outline)
-	queue_redraw()
 
 
+## Карта изменилась (захват плитки, стройка, порт): быстро обновляем цвета и линии.
 func refresh() -> void:
-	queue_redraw()
+	_update_dynamic()
 
 
 func set_construction(tiles: Array) -> void:
 	_construction = tiles
-	queue_redraw()
+	_top_layer.queue_redraw()
 
 
 func set_player(cid: int) -> void:
 	player_country = cid
-	queue_redraw()
+	_update_dynamic()
 
 
 # ---------- выделение ----------
@@ -276,7 +303,84 @@ func _tile_color(i: int, owner_id: int) -> Color:
 	return base.darkened(v * 0.10)
 
 
-func _draw_sea() -> void:
+## Сетка суши строится один раз: многоугольники плиток режем на треугольники.
+func _build_mesh() -> void:
+	var n := world.tile_total()
+	_mv = PackedVector2Array()
+	_mi = PackedInt32Array()
+	_mstart = PackedInt32Array()
+	_mstart.resize(n)
+	_mstart.fill(0)
+	_mcount = PackedInt32Array()
+	_mcount.resize(n)
+	_mcount.fill(0)
+	_coast = PackedVector2Array()
+	for i in n:
+		if world.land[i] == 0:
+			continue
+		var poly: PackedVector2Array = _poly[i]
+		var tri := Geometry2D.triangulate_polygon(poly)
+		if tri.is_empty():
+			# запасной вариант: веер от первой вершины
+			tri = PackedInt32Array()
+			for q in range(1, poly.size() - 1):
+				tri.append(0)
+				tri.append(q)
+				tri.append(q + 1)
+		var base := _mv.size()
+		_mstart[i] = base
+		_mcount[i] = poly.size()
+		_mv.append_array(poly)
+		for ix in tri:
+			_mi.append(base + int(ix))
+		for k in 6:
+			var nb := world.neighbor(i, k)
+			if nb < 0 or world.land[nb] == 0:
+				_coast.append_array(_edge_pts(i, k))
+	_mc = PackedColorArray()
+	_mc.resize(_mv.size())
+
+
+## Цвета плиток и линии границ по текущим владельцам. Быстро: без триангуляции.
+func _update_dynamic() -> void:
+	if world == null or _land_mesh == null:
+		return
+	_border = PackedVector2Array()
+	_grid = PackedVector2Array()
+	_mine = PackedVector2Array()
+	for i in world.tile_total():
+		if world.land[i] == 0 or _mcount[i] == 0:
+			continue
+		var oid := world.tile_owner[i]
+		var col := _tile_color(i, oid)
+		var st := _mstart[i]
+		for q in _mcount[i]:
+			_mc[st + q] = col
+		for k in 6:
+			var nb := world.neighbor(i, k)
+			var nb_owner := -2
+			if nb >= 0 and world.land[nb] == 1:
+				nb_owner = world.tile_owner[nb]
+			if player_country >= 0 and oid == player_country and nb_owner != player_country:
+				_mine.append_array(_edge_pts(i, k))
+			if nb >= 0 and world.land[nb] == 1 and nb > i:
+				if nb_owner != oid:
+					_border.append_array(_edge_pts(i, k))
+				else:
+					_grid.append_array(_edge_pts(i, k))
+	_mesh.clear_surfaces()
+	if _mv.size() >= 3:
+		var arrays: Array = []
+		arrays.resize(Mesh.ARRAY_MAX)
+		arrays[Mesh.ARRAY_VERTEX] = _mv
+		arrays[Mesh.ARRAY_COLOR] = _mc
+		arrays[Mesh.ARRAY_INDEX] = _mi
+		_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	_top_layer.queue_redraw()
+
+
+func _paint_sea(c: Node2D) -> void:
+	c.draw_rect(world.bounds(), SEA_BASE)
 	var g := world.sea_grid
 	var lines := PackedVector2Array()
 	for j in g.total():
@@ -285,14 +389,14 @@ func _draw_sea() -> void:
 		# но линии (зоны для флота) только у проходимых
 		if not navigable and world.sea_land_share[j] >= 0.99:
 			continue
-		var c := g.center_of(j)
+		var cc := g.center_of(j)
 		var pts := PackedVector2Array()
 		for k in 6:
-			pts.append(c + _sea_off[k])
+			pts.append(cc + _sea_off[k])
 		var col := SEA_CELL_DEEP
 		if world.sea_coastal[j] == 1:
 			col = SEA_CELL_COAST
-		draw_colored_polygon(pts, col)
+		c.draw_colored_polygon(pts, col)
 		if not navigable:
 			continue
 		for k in 6:
@@ -303,7 +407,7 @@ func _draw_sea() -> void:
 			lines.append(pts[k])
 			lines.append(pts[(k + 1) % 6])
 	if lines.size() >= 2:
-		draw_multiline(lines, Color(1, 1, 1, 0.20), 2.0)
+		c.draw_multiline(lines, Color(1, 1, 1, 0.20), 2.0)
 
 
 func _star_points(center: Vector2, r_out: float, r_in: float) -> PackedVector2Array:
@@ -317,45 +421,18 @@ func _star_points(center: Vector2, r_out: float, r_in: float) -> PackedVector2Ar
 	return pts
 
 
-func _draw() -> void:
+## Верхний слой: линии, города, порты, стройки и рамка за краем мира.
+func _paint_top(c: Node2D) -> void:
 	if world == null:
 		return
-	draw_rect(world.bounds(), SEA_BASE)
-	_draw_sea()
-
-	var coast := PackedVector2Array()
-	var border := PackedVector2Array()
-	var grid := PackedVector2Array()
-	var mine := PackedVector2Array()   # граница страны игрока
-
-	for i in world.tile_total():
-		if world.land[i] == 0:
-			continue
-		var oid := world.tile_owner[i]
-		draw_colored_polygon(_poly[i], _tile_color(i, oid))
-		for k in 6:
-			var nb := world.neighbor(i, k)
-			var nb_owner := -2
-			if nb >= 0 and world.land[nb] == 1:
-				nb_owner = world.tile_owner[nb]
-			if player_country >= 0 and oid == player_country and nb_owner != player_country:
-				mine.append_array(_edge_pts(i, k))
-			if nb < 0 or world.land[nb] == 0:
-				coast.append_array(_edge_pts(i, k))
-			elif nb > i:   # общее ребро двух плиток суши рисуем один раз
-				if nb_owner != oid:
-					border.append_array(_edge_pts(i, k))
-				else:
-					grid.append_array(_edge_pts(i, k))
-
-	if grid.size() >= 2:
-		draw_multiline(grid, Color(0, 0, 0, 0.12), 1.0)
-	if border.size() >= 2:
-		draw_multiline(border, Color(0, 0, 0, 0.6), 2.5)
-	if coast.size() >= 2:
-		draw_multiline(coast, Color(0.04, 0.09, 0.2, 0.95), 3.0)
-	if mine.size() >= 2:
-		draw_multiline(mine, Color(1, 1, 1, 0.95), 4.0)
+	if _grid.size() >= 2:
+		c.draw_multiline(_grid, Color(0, 0, 0, 0.12), 1.0)
+	if _border.size() >= 2:
+		c.draw_multiline(_border, Color(0, 0, 0, 0.6), 2.5)
+	if _coast.size() >= 2:
+		c.draw_multiline(_coast, Color(0.04, 0.09, 0.2, 0.95), 3.0)
+	if _mine.size() >= 2:
+		c.draw_multiline(_mine, Color(1, 1, 1, 0.95), 4.0)
 
 	# города — кружки одного размера, столицы — белые звёздочки
 	for i in world.tile_total():
@@ -365,13 +442,13 @@ func _draw() -> void:
 		var cc := world.center_of(i)
 		if kind == 2:
 			var star := _star_points(cc, world.hex_r * 0.62, world.hex_r * 0.26)
-			draw_colored_polygon(star, Color(1, 1, 1, 1))
+			c.draw_colored_polygon(star, Color(1, 1, 1, 1))
 			var outline := star.duplicate()
 			outline.append(star[0])
-			draw_polyline(outline, Color(0.05, 0.05, 0.1, 0.9), 1.5)
+			c.draw_polyline(outline, Color(0.05, 0.05, 0.1, 0.9), 1.5)
 		else:
-			draw_circle(cc, world.hex_r * 0.40, Color(0.05, 0.05, 0.1, 0.9))
-			draw_circle(cc, world.hex_r * 0.28, Color(0.95, 0.95, 0.95, 1))
+			c.draw_circle(cc, world.hex_r * 0.40, Color(0.05, 0.05, 0.1, 0.9))
+			c.draw_circle(cc, world.hex_r * 0.28, Color(0.95, 0.95, 0.95, 1))
 
 	# порты: синий значок с якорем у города
 	for i in world.tile_total():
@@ -379,21 +456,21 @@ func _draw() -> void:
 			continue
 		var pc := world.center_of(i) + Vector2(world.hex_r * 0.5, world.hex_r * 0.42)
 		var pr := world.hex_r * 0.3
-		draw_circle(pc, pr + 1.5, Color(0.05, 0.05, 0.1, 0.95))
-		draw_circle(pc, pr, Color(0.15, 0.45, 0.85))
-		draw_line(pc + Vector2(0, -pr * 0.6), pc + Vector2(0, pr * 0.6), Color(1, 1, 1), 1.6)
-		draw_line(pc + Vector2(-pr * 0.5, -pr * 0.25), pc + Vector2(pr * 0.5, -pr * 0.25), Color(1, 1, 1), 1.6)
-		draw_arc(pc + Vector2(0, pr * 0.1), pr * 0.5, 0.0, PI, 8, Color(1, 1, 1), 1.6)
+		c.draw_circle(pc, pr + 1.5, Color(0.05, 0.05, 0.1, 0.95))
+		c.draw_circle(pc, pr, Color(0.15, 0.45, 0.85))
+		c.draw_line(pc + Vector2(0, -pr * 0.6), pc + Vector2(0, pr * 0.6), Color(1, 1, 1), 1.6)
+		c.draw_line(pc + Vector2(-pr * 0.5, -pr * 0.25), pc + Vector2(pr * 0.5, -pr * 0.25), Color(1, 1, 1), 1.6)
+		c.draw_arc(pc + Vector2(0, pr * 0.1), pr * 0.5, 0.0, PI, 8, Color(1, 1, 1), 1.6)
 
 	# стройки — жёлтые кольца
 	for t in _construction:
 		var ti: int = t
-		draw_arc(world.center_of(ti), world.hex_r * 0.7, 0.0, TAU, 24, Color(1.0, 0.85, 0.2, 1.0), 3.0)
+		c.draw_arc(world.center_of(ti), world.hex_r * 0.7, 0.0, TAU, 24, Color(1.0, 0.85, 0.2, 1.0), 3.0)
 
 	# рамка: закрывает всё, что выступает за край мира
 	var b := world.bounds()
 	var big := 5000.0
-	draw_rect(Rect2(b.position.x - big, b.position.y - big, big, b.size.y + 2.0 * big), FRAME_COLOR)
-	draw_rect(Rect2(b.end.x, b.position.y - big, big, b.size.y + 2.0 * big), FRAME_COLOR)
-	draw_rect(Rect2(b.position.x, b.position.y - big, b.size.x, big), FRAME_COLOR)
-	draw_rect(Rect2(b.position.x, b.end.y, b.size.x, big), FRAME_COLOR)
+	c.draw_rect(Rect2(b.position.x - big, b.position.y - big, big, b.size.y + 2.0 * big), FRAME_COLOR)
+	c.draw_rect(Rect2(b.end.x, b.position.y - big, big, b.size.y + 2.0 * big), FRAME_COLOR)
+	c.draw_rect(Rect2(b.position.x, b.position.y - big, b.size.x, big), FRAME_COLOR)
+	c.draw_rect(Rect2(b.position.x, b.end.y, b.size.x, big), FRAME_COLOR)
