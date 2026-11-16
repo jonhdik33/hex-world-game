@@ -10,6 +10,7 @@ signal action_pressed(id: String)
 signal production_changed(percent: int)
 signal research_pressed(branch: int)
 signal restart_pressed
+signal difficulty_changed(level: int)
 signal continue_pressed
 signal save_pressed
 signal sound_toggled(on: bool)
@@ -19,7 +20,8 @@ const GameState = preload("res://scripts/core/game_state.gd")
 
 const FONT := 22
 const SPEED_NAMES: Array = ["Пауза", "x1", "x2", "x3"]
-const ACTION_SLOTS := 5
+const ACTION_SLOTS := 7
+const MENU_ICONS: Array = ["balance", "countries", "production", "science", "settings"]
 const MENU_NAMES: Array = ["Баланс", "Страны", "Производство", "Наука", "Настройки"]
 const ICON_DIR := "res://assets/icons/"
 
@@ -39,7 +41,8 @@ var _speed_box: HBoxContainer
 var _speed_buttons: Array = []
 var _action_btns: Array = []
 var _action_ids: Array = []
-var _menu_row: HBoxContainer
+var _menu_row: VBoxContainer
+var _diff_btns: Array = []
 var _menu_btns: Array = []
 var _menu_panels: Array = []
 var _balance_label: Label
@@ -227,7 +230,7 @@ func _build() -> void:
 
 ## Меню справа сверху: четыре кнопки-переключателя и четыре окна (открыто не больше одного).
 func _build_menu() -> void:
-	_menu_row = HBoxContainer.new()
+	_menu_row = VBoxContainer.new()
 	add_child(_menu_row)
 	_menu_row.anchor_left = 1.0
 	_menu_row.anchor_right = 1.0
@@ -236,9 +239,20 @@ func _build_menu() -> void:
 	_menu_row.grow_horizontal = Control.GROW_DIRECTION_BEGIN
 	for n in MENU_NAMES.size():
 		var b := Button.new()
-		b.text = MENU_NAMES[n]
 		b.toggle_mode = true
-		b.add_theme_font_size_override("font_size", 20)
+		b.custom_minimum_size = Vector2(68, 68)
+		b.tooltip_text = MENU_NAMES[n]
+		var ipath: String = ICON_DIR + String(MENU_ICONS[n]) + ".svg"
+		var itex: Texture2D = null
+		if ResourceLoader.exists(ipath):
+			itex = load(ipath) as Texture2D
+		if itex != null:
+			b.icon = itex
+			b.expand_icon = true
+			b.icon_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		else:
+			b.text = MENU_NAMES[n]
+			b.add_theme_font_size_override("font_size", 16)
 		b.toggled.connect(_on_menu_toggled.bind(n))
 		_menu_row.add_child(b)
 		_menu_btns.append(b)
@@ -246,8 +260,8 @@ func _build_menu() -> void:
 		add_child(p)
 		p.anchor_left = 1.0
 		p.anchor_right = 1.0
-		p.offset_right = -8.0
-		p.offset_top = 132.0
+		p.offset_right = -84.0
+		p.offset_top = 76.0
 		p.grow_horizontal = Control.GROW_DIRECTION_BEGIN
 		p.visible = false
 		_menu_panels.append(p)
@@ -314,6 +328,18 @@ func _build_menu() -> void:
 	_volume_slider.custom_minimum_size = Vector2(380, 40)
 	_volume_slider.value_changed.connect(func(v: float): volume_changed.emit(v))
 	sbox.add_child(_volume_slider)
+	sbox.add_child(_plain_label("Сложность ботов", Color(0.92, 0.95, 1.0)))
+	var drow := HBoxContainer.new()
+	var dnames: Array = ["Лёгкая", "Средняя", "Сложная"]
+	for n in 3:
+		var db := Button.new()
+		db.text = dnames[n]
+		db.toggle_mode = true
+		db.add_theme_font_size_override("font_size", 20)
+		db.pressed.connect(_on_diff_pressed.bind(n))
+		drow.add_child(db)
+		_diff_btns.append(db)
+	sbox.add_child(drow)
 	var save_btn := Button.new()
 	save_btn.text = "Сохранить игру"
 	save_btn.add_theme_font_size_override("font_size", FONT)
@@ -337,6 +363,17 @@ func _on_menu_toggled(on: bool, index: int) -> void:
 		elif on:
 			p.visible = false
 			b.set_pressed_no_signal(false)
+
+
+func _on_diff_pressed(level: int) -> void:
+	set_difficulty(level)
+	difficulty_changed.emit(level)
+
+
+func set_difficulty(level: int) -> void:
+	for n in _diff_btns.size():
+		var b: Button = _diff_btns[n]
+		b.set_pressed_no_signal(n == level)
 
 
 func _close_menu() -> void:

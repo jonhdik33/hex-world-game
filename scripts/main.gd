@@ -10,6 +10,7 @@ const CameraCtl = preload("res://scripts/view/camera_controller.gd")
 const Hud = preload("res://scripts/view/hud.gd")
 const UnitsView = preload("res://scripts/view/units_view.gd")
 const SaveGame = preload("res://scripts/core/save_game.gd")
+const Navy = preload("res://scripts/core/navy.gd")
 const Sfx = preload("res://scripts/view/sfx.gd")
 
 const SETTINGS_PATH := "user://settings.cfg"
@@ -18,7 +19,7 @@ const AUTOSAVE_DAYS := 30
 const MASK_PATH := "res://assets/map_mask.png"
 const START_SEED := 12345
 # секунд реального времени на один игровой день; индекс = скорость (0 = пауза)
-const DAY_SECONDS: Array = [0.0, 3.0, 1.5, 0.6]
+const DAY_SECONDS: Array = [0.0, 5.0, 2.5, 1.2]
 # во сколько раз быстрее идут походы и бои (индекс = скорость)
 const ANIM_FACTOR: Array = [0.0, 1.0, 2.0, 3.0]
 
@@ -40,6 +41,9 @@ var speed: int = 1
 var _accum: float = 0.0
 var _picked: int = -1
 var _sel_land: int = -1
+var _sel_sea: int = -1        # выбранная морская ячейка
+var _ship_cell: int = -1      # ячейка с выбранным своим кораблём (-1 = корабль не выбран)
+var difficulty: int = 1       # сложность ботов 0..2
 
 
 func _ready() -> void:
@@ -84,6 +88,9 @@ func _ready() -> void:
 	add_child(sfx)
 	_load_settings()
 	hud.set_settings(sound_on, volume)
+	state.difficulty = difficulty
+	hud.set_difficulty(difficulty)
+	hud.difficulty_changed.connect(_on_difficulty)
 	hud.continue_pressed.connect(_on_continue)
 	hud.save_pressed.connect(_on_save_pressed)
 	hud.sound_toggled.connect(_on_sound_toggled)
@@ -124,6 +131,10 @@ func _on_tapped(screen_pos: Vector2, world_pos: Vector2) -> void:
 		return
 
 	var i := map_view.pick_land(world_pos)
+	# выбран свой корабль: нажатие на берег = высадка (плыть к берегу и высадить дивизию)
+	if i >= 0 and playing and _ship_cell >= 0:
+		_ship_to_land(i)
+		return
 	# выбрана своя готовая дивизия: нажатие на другую плитку = приказ идти туда
 	if i >= 0 and playing and _sel_land >= 0 and i != _sel_land and _has_ready_unit(_sel_land) and not _has_own_unit(i):
 		_try_move(_sel_land, i)
@@ -147,15 +158,27 @@ func _on_tapped(screen_pos: Vector2, world_pos: Vector2) -> void:
 		hud.hide_pick()
 	var j := world.sea_grid.tile_at(world_pos)
 	if j >= 0 and world.sea_navigable[j] == 1:
+		# выбран свой корабль: нажатие на другую морскую ячейку = плыть туда
+		if playing and _ship_cell >= 0 and j != _ship_cell:
+			_ship_to_sea(j)
+			return
+		_sel_sea = j
+		_ship_cell = -1
+		if playing and not _own_ship_at(j).is_empty():
+			_ship_cell = j
 		map_view.select_sea(j)
 		_show_sea_info(j)
 	else:
+		_ship_cell = -1
+		_sel_sea = -1
 		map_view.clear_selection()
 		_show_info_empty()
 
 
 func _clear_all() -> void:
 	_sel_land = -1
+	_sel_sea = -1
+	_ship_cell = -1
 	hud.set_actions([])
 	map_view.clear_selection()
 	if not playing:
@@ -182,6 +205,7 @@ func _on_confirm() -> void:
 		return
 	state.player = _picked
 	state.mil_share[_picked] = GameState.DEFAULT_MIL_SHARE
+	state.setup_bots()
 	playing = true
 	speed = 1
 	_accum = 0.0
@@ -212,6 +236,23 @@ func _on_action(id: String) -> void:
 		if state.disband(cid, t):
 			hud.show_event("Дивизия распущена")
 			units.refresh()
+	elif id == "port":
+		if Navy.start_port(state, cid, t):
+			hud.show_event("Начато строительство порта: %d дн." % Navy.PORT_DAYS)
+			map_view.set_construction(state.construction_tiles(cid))
+	elif id == "ship":
+		if Navy.build_ship(state, cid, t):
+			hud.show_event("Транспорт построен")
+			sfx.play("build")
+			units.refresh()
+	elif id == "load":
+		if Navy.load_unit(state, cid, t):
+			hud.show_event("Дивизия погружена")
+			units.refresh()
+	elif id == "pick_ship":
+		_ship_cell = world.tile_sea[t]
+		hud.show_event("Нажмите на море, чтобы плыть, или на берег, чтобы высадиться")
+		return
 	elif id == "stop":
 		state.stop_marching(cid, t)
 		hud.show_event("Поход остановлен")
@@ -237,6 +278,42 @@ func _on_action(id: String) -> void:
 func _has_ready_unit(t: int) -> bool:
 	var u: Dictionary = state.unit_at(t)
 	return not u.is_empty() and int(u["owner"]) == state.player and int(u["state"]) == GameState.ST_IDLE and int(u["recover"]) <= 0
+
+
+## Свой корабль в ячейке j (стоящий, не в пути).
+func _own_ship_at(j: int) -> Dictionary:
+	for sh in state.ships:
+		var d: Dictionary = sh
+		if int(d["owner"]) == state.player and int(d["cell"]) == j and int(d["state"]) == 0:
+			return d
+	return {}
+
+
+func _ship_to_sea(j: int) -> void:
+	var ship := _own_ship_at(_ship_cell)
+	var res: Dictionary = Navy.order_ship(state, state.player, ship, j, -1)
+	hud.show_event(res["msg"])
+	if res["ok"]:
+		sfx.play("click")
+		_ship_cell = -1
+	units.refresh()
+	_refresh_hud()
+
+
+func _ship_to_land(i: int) -> void:
+	var ship := _own_ship_at(_ship_cell)
+	var cell: int = world.tile_sea[i]
+	if ship.is_empty() or cell < 0:
+		hud.show_event("Сюда не причалить")
+		return
+	var res: Dictionary = Navy.order_ship(state, state.player, ship, cell, i)
+	hud.show_event(res["msg"])
+	if res["ok"]:
+		sfx.play("click")
+		_ship_cell = -1
+		map_view.clear_selection()
+	units.refresh()
+	_refresh_hud()
 
 
 func _has_own_unit(t: int) -> bool:
@@ -300,6 +377,8 @@ func _on_continue() -> void:
 	speed = 1
 	_accum = 0.0
 	_last_save_day = state.day
+	state.difficulty = difficulty
+	state.setup_bots()
 	_picked = -1
 	_sel_land = -1
 	map_view.set_player(state.player)
@@ -325,6 +404,7 @@ func _load_settings() -> void:
 	if cf.load(SETTINGS_PATH) == OK:
 		sound_on = bool(cf.get_value("sound", "on", true))
 		volume = float(cf.get_value("sound", "volume", 0.7))
+		difficulty = clampi(int(cf.get_value("game", "difficulty", 1)), 0, 2)
 	sfx.enabled = sound_on
 	sfx.volume = volume
 
@@ -333,7 +413,17 @@ func _store_settings() -> void:
 	var cf := ConfigFile.new()
 	cf.set_value("sound", "on", sound_on)
 	cf.set_value("sound", "volume", volume)
+	cf.set_value("game", "difficulty", difficulty)
 	cf.save(SETTINGS_PATH)
+
+
+func _on_difficulty(level: int) -> void:
+	difficulty = level
+	state.difficulty = level
+	if playing:
+		state.setup_bots()
+	_store_settings()
+	hud.show_event("Сложность ботов изменена")
 
 
 func _on_sound_toggled(on: bool) -> void:
@@ -388,6 +478,8 @@ func _on_restart() -> void:
 	state.reset()
 	_picked = -1
 	_sel_land = -1
+	_sel_sea = -1
+	_ship_cell = -1
 	map_view.set_player(-1)
 	units.set_player(-1)
 	map_view.clear_selection()
@@ -529,6 +621,8 @@ func _show_land_info(t: int) -> void:
 		lines.append("Город · заводов здесь: %d" % world.tile_factories[t])
 	else:
 		lines.append("Земля")
+	if world.tile_port[t] == 1:
+		lines.append("Есть порт")
 	lines.append("Плитка: %d, %d" % [world.col_of(t), world.row_of(t)])
 	if playing and state.army_on(t) > 0:
 		var u: Dictionary = state.unit_at(t)
@@ -581,6 +675,24 @@ func _update_actions(t: int) -> void:
 		elif r2 == "Не хватает снаряжения":
 			l2 += " — нет снаряжения"
 		list.append({"id": "recruit", "text": l2, "enabled": r2 == ""})
+	if world.tile_city[t] != 0 and world.tile_sea[t] >= 0:
+		if world.tile_port[t] == 0:
+			var rp := Navy.port_block_reason(state, cid, t)
+			var lp := "Построить порт (%s)" % GameState.fmt(Navy.PORT_COST)
+			if rp == "Не хватает денег":
+				lp += " — нет денег"
+			list.append({"id": "port", "text": lp, "enabled": rp == ""})
+		else:
+			var rs := Navy.ship_block_reason(state, cid, t)
+			var ls := "Построить транспорт (%s)" % GameState.fmt(Navy.TRANSPORT_COST)
+			if rs == "Не хватает денег":
+				ls += " — нет денег"
+			list.append({"id": "ship", "text": ls, "enabled": rs == ""})
+			var free := Navy.free_ship_at_port(state, cid, t)
+			if not free.is_empty() and _has_ready_unit(t):
+				list.append({"id": "load", "text": "Погрузить дивизию на транспорт", "enabled": true})
+			if not _own_ship_at(world.tile_sea[t]).is_empty():
+				list.append({"id": "pick_ship", "text": "Управлять транспортом", "enabled": true})
 	var u := state.unit_at(t)
 	if not u.is_empty():
 		if int(u["state"]) == GameState.ST_IDLE and int(u["recover"]) <= 0:
@@ -601,4 +713,11 @@ func _show_sea_info(j: int) -> void:
 		lines.append("Море: открытый океан")
 	lines.append("Морская зона: %d, %d" % [g.col_of(j), g.row_of(j)])
 	lines.append("Суши в зоне: %d%%" % int(round(world.sea_land_share[j] * 100.0)))
+	if playing and not _own_ship_at(j).is_empty():
+		var sh: Dictionary = _own_ship_at(j)
+		if Dictionary(sh["cargo"]).is_empty():
+			lines.append("Ваш транспорт (пустой)")
+		else:
+			lines.append("Ваш транспорт с дивизией")
+		lines.append("Нажмите на море — плыть, на берег — высадка")
 	hud.set_info("\n".join(lines))

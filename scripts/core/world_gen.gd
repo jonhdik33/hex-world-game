@@ -55,6 +55,7 @@ static func build_land(world: World, mask: Image) -> void:
 	_prune_slivers(world, weak)
 	_find_landmasses(world)
 	_build_sea(world)
+	_build_sea_access(world)
 
 
 ## Слабые береговые плитки (суши еле-еле), у которых мало соседей-суши, убираем:
@@ -67,6 +68,67 @@ static func _prune_slivers(world: World, weak: Array) -> void:
 			drop.append(i)
 	for t in drop:
 		world.land[int(t)] = 0
+
+
+## Точка воды в каждой проходимой ячейке (для кораблей) и ближайшая ячейка для береговых плиток.
+static func _build_sea_access(world: World) -> void:
+	var g := world.sea_grid
+	var n := g.total()
+	world.sea_anchor.resize(n)
+	var b := world.bounds()
+	for j in n:
+		var c := g.center_of(j)
+		world.sea_anchor[j] = c
+		if world.sea_navigable[j] == 0:
+			continue
+		var best := c
+		var best_d := 1e30
+		var found := false
+		for ring in [0.0, 0.4, 0.75]:
+			var count := 1
+			if ring > 0.0:
+				count = 12
+			for q in count:
+				var a := TAU * float(q) / 12.0
+				var p: Vector2 = c + Vector2(cos(a), sin(a)) * g.r * float(ring)
+				if not b.has_point(p):
+					continue
+				var t := world.tile_at(p)
+				if t >= 0 and world.land[t] == 1:
+					continue
+				var d := p.distance_squared_to(c)
+				if d < best_d:
+					best_d = d
+					best = p
+					found = true
+			if found:
+				break
+		world.sea_anchor[j] = best
+	# для каждой береговой плитки — ближайшая проходимая ячейка (не дальше 1.5 радиуса ячейки)
+	var reach := g.r * 1.5
+	for i in world.tile_total():
+		world.tile_sea[i] = -1
+		if world.land[i] == 0:
+			continue
+		var coastal := false
+		for k in 6:
+			var nb := world.neighbor(i, k)
+			if nb < 0 or world.land[nb] == 0:
+				coastal = true
+				break
+		if not coastal:
+			continue
+		var pc := world.center_of(i)
+		var bj := -1
+		var bd := reach * reach
+		for j in n:
+			if world.sea_navigable[j] == 0:
+				continue
+			var d2 := pc.distance_squared_to(world.sea_anchor[j])
+			if d2 < bd:
+				bd = d2
+				bj = j
+		world.tile_sea[i] = bj
 
 
 static func _is_land(mask: Image, x: float, y: float, w: int, h: int) -> bool:
@@ -153,6 +215,7 @@ static func assign_countries(world: World, seed_value: int) -> void:
 	world.tile_owner.fill(-1)
 	world.tile_city.fill(0)
 	world.tile_factories.fill(0)
+	world.tile_port.fill(0)
 	world.countries = []
 
 	var big: Array = []
@@ -204,6 +267,7 @@ static func assign_countries(world: World, seed_value: int) -> void:
 	# 5) стартовые заводы (случайно; 1-2 мегастраны) и города с заводами
 	_assign_factories(world, rng)
 	_place_cities(world, rng)
+	_place_ports(world)
 
 
 static func _place_seeds(world: World, comp: PackedInt32Array, k: int, rng: RandomNumberGenerator) -> Array:
@@ -378,6 +442,23 @@ static func _assign_factories(world: World, rng: RandomNumberGenerator) -> void:
 
 ## Расставляет города (далеко друг от друга) и раскладывает заводы страны по ним.
 ## Столица всегда город; в городе минимум один завод.
+## У каждой страны с выходом к морю есть порт: в столице, а если у неё нет моря — в самом крупном приморском городе.
+static func _place_ports(world: World) -> void:
+	world.tile_port.fill(0)
+	for cid in world.countries.size():
+		var cap: int = world.countries[cid]["capital"]
+		if world.tile_sea[cap] >= 0:
+			world.tile_port[cap] = 1
+			continue
+		var best := -1
+		for i in world.tile_total():
+			if world.tile_owner[i] == cid and world.tile_city[i] != 0 and world.tile_sea[i] >= 0:
+				if best < 0 or world.tile_factories[i] > world.tile_factories[best]:
+					best = i
+		if best >= 0:
+			world.tile_port[best] = 1
+
+
 static func _place_cities(world: World, rng: RandomNumberGenerator) -> void:
 	world.tile_city.fill(0)
 	world.tile_factories.fill(0)

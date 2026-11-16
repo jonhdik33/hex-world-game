@@ -9,6 +9,7 @@ extends RefCounted
 ## достраивается через BUILD_DAYS дней. Боты пока ничего не строят (модуль 5).
 
 const World = preload("res://scripts/core/world.gd")
+const Navy = preload("res://scripts/core/navy.gd")
 const BotAI = preload("res://scripts/core/bot_ai.gd")
 
 const DAYS_PER_YEAR := 360
@@ -26,8 +27,9 @@ const ARMY_TILES_PER_DIVISION := 8.0  # стартовая армия: 1 див�
 
 # армия
 const RECRUIT_COST := 1500.0          # найм одной дивизии (в городе, сразу)
-const STEP_SECONDS := 2.0             # шаг на соседнюю плитку (реальных секунд при x1)
-const BATTLE_SECONDS := 1.5           # длительность анимации боя
+const STEP_SECONDS := 3.0             # шаг на соседнюю плитку (реальных секунд при x1)
+const BATTLE_DPS := 20.0              # урон в секунду одной дивизии полной силы
+const BATTLE_MAX := 40.0              # дольше этого бой не длится
 const RECOVER_DAYS := 3               # дней отдыха после боя
 const ST_IDLE := 0
 const ST_MOVE := 1
@@ -49,7 +51,6 @@ const TECH_COST: Array = [6000.0, 14000.0, 28000.0]
 const TECH_DAYS: Array = [15, 25, 35]
 const TECH_MAX := 3
 const WAIT_REROUTE := 3.0            # через сколько секунд ожидания искать обход
-const BOT_PERIOD := 3                # раз в сколько дней думает бот
 
 # стройка
 const FACTORY_COST := 4000.0          # цена первого достраиваемого завода (в городе с 1 заводом)
@@ -66,6 +67,12 @@ var army: Array = []          # дивизий у каждой страны (int
 var tile_army := PackedInt32Array()   # 1 = на плитке стоит дивизия
 var squads: Array = []        # все дивизии (см. раздел «армия»)
 var unit_on: Dictionary = {}  # плитка -> дивизия
+var battles: Array = []       # идущие бои: {target, att, def, t}
+var ships: Array = []         # корабли (см. navy.gd)
+var _next_ship_id: int = 1
+var difficulty: int = 1       # 0 лёгкая, 1 средняя, 2 сложная (боты)
+var bot_style: Array = []     # характер бота: 0 рвётся к столице, 1 берёт ближние плитки, 2 обороняется
+var active_bot: Array = []    # true = бот воюет (остальные только развиваются)
 var rng := RandomNumberGenerator.new()
 var bot_aggr: Array = []      # агрессивность бота 0..1
 var mil_share: Array = []     # доля заводов, работающих на армию (0..1)
@@ -97,6 +104,9 @@ func reset() -> void:
 	build_queue = []
 	events = []
 	sounds = []
+	battles = []
+	ships = []
+	_next_ship_id = 1
 	map_dirty = false
 	for cid in world.countries.size():
 		var cn: Dictionary = world.countries[cid]
@@ -110,6 +120,8 @@ func reset() -> void:
 	war_since = {}
 	truce = {}
 	bot_aggr = []
+	bot_style = []
+	active_bot = []
 	mil_share = []
 	equipment = []
 	tech = []
@@ -117,11 +129,21 @@ func reset() -> void:
 	for c in world.countries.size():
 		var ag := rng.randf_range(0.2, 1.0)
 		bot_aggr.append(ag)
+		var rs := rng.randf()
+		if rs < 0.3:
+			bot_style.append(0)
+		elif rs < 0.7:
+			bot_style.append(1)
+		else:
+			bot_style.append(2)
+		active_bot.append(false)
 		mil_share.append(0.2 + 0.4 * ag)
 		equipment.append(EQUIP_PER_DIVISION * START_EQUIP_DIVISIONS)
 		tech.append([0, 0, 0])
 		research.append({})
 	_place_armies()
+	Navy.give_start_ships(self)
+	_rebuild()
 
 
 # ---------- экономика ----------
@@ -135,13 +157,15 @@ func budget(cid: int) -> Dictionary:
 	var up_f := float(cn["factories"]) * FACTORY_UPKEEP
 	var up_c := float(cn["cities"]) * CITY_UPKEEP
 	var up_a := float(army[cid]) * DIVISION_UPKEEP
+	var up_s := float(Navy.count_of(self, cid)) * Navy.SHIP_UPKEEP
 	var income := tax + industry
-	var expenses := up_f + up_c + up_a
+	var expenses := up_f + up_c + up_a + up_s
 	return {
 		"tax": tax,
 		"industry": industry,
 		"upkeep_factories": up_f,
 		"upkeep_cities": up_c,
+		"upkeep_ships": up_s,
 		"upkeep_army": up_a,
 		"income": income,
 		"expenses": expenses,
@@ -183,8 +207,8 @@ func tick_day() -> void:
 		e["hp"] = minf(MAX_HP, float(e["hp"]) + HEAL_PER_DAY)
 	_progress_builds()
 	for cid in world.countries.size():
-		if cid != player and (day + cid) % BOT_PERIOD == 0:
-			BotAI.think(self, cid, float(bot_aggr[cid]))
+		if cid != player and (day + cid) % bot_period() == 0:
+			BotAI.think(self, cid, float(bot_aggr[cid]), is_bot_active(cid))
 	day += 1
 
 
@@ -234,7 +258,7 @@ func _place_armies() -> void:
 func _add_unit(cid: int, t: int) -> Dictionary:
 	var e := {
 		"id": _next_id, "owner": cid, "tile": t, "from": t, "hp": MAX_HP, "path": [], "dest": -1,
-		"p": 0.0, "crossed": false, "state": ST_IDLE, "recover": 0, "fight_t": 0.0, "wait_t": 0.0, "dead": false,
+		"p": 0.0, "crossed": false, "state": ST_IDLE, "recover": 0, "fight_t": 0.0, "wait_t": 0.0, "dead": false, "pre": 0,
 	}
 	_next_id += 1
 	squads.append(e)
@@ -255,6 +279,11 @@ func _rebuild() -> void:
 		tile_army[int(e["tile"])] = 1
 		unit_on[int(e["tile"])] = e
 		army[int(e["owner"])] = int(army[int(e["owner"])]) + 1
+	for sh in ships:
+		var shd: Dictionary = sh
+		var cargo: Dictionary = shd["cargo"]
+		if not cargo.is_empty():
+			army[int(shd["owner"])] = int(army[int(shd["owner"])]) + 1
 
 
 func army_on(t: int) -> int:
@@ -333,6 +362,55 @@ func is_adjacent(a: int, b: int) -> bool:
 		if world.neighbor(a, k) == b:
 			return true
 	return false
+
+
+# ---------- боты: сложность ----------
+
+func bot_period() -> int:
+	return int([5, 3, 2][difficulty])
+
+
+func bot_orders() -> int:
+	return int([1, 2, 3][difficulty])
+
+
+func bot_miss_chance() -> float:
+	return float([0.5, 0.3, 0.1][difficulty])
+
+
+func bot_attack_ratio() -> float:
+	return float([1.3, 1.1, 1.0][difficulty])
+
+
+func bot_peace_days() -> int:
+	return int([120, 60, 30][difficulty])
+
+
+func bot_active_count() -> int:
+	return int([3, 5, 8][difficulty])
+
+
+## Выбирает, какие боты воюют: ближайшие к столице игрока (число зависит от сложности).
+func setup_bots() -> void:
+	for c in active_bot.size():
+		active_bot[c] = false
+	if player < 0:
+		return
+	var pc: int = world.countries[player]["capital"]
+	var here: Vector2 = world.center_of(pc)
+	var cand: Array = []
+	for c in world.countries.size():
+		if c != player and int(world.countries[c]["tiles"]) > 0:
+			var cap: int = world.countries[c]["capital"]
+			cand.append([here.distance_squared_to(world.center_of(cap)), c])
+	cand.sort_custom(func(a: Array, b: Array) -> bool: return float(a[0]) < float(b[0]))
+	for k in mini(bot_active_count(), cand.size()):
+		var row: Array = cand[k]
+		active_bot[int(row[1])] = true
+
+
+func is_bot_active(cid: int) -> bool:
+	return bool(active_bot[cid]) or (player >= 0 and is_at_war(cid, player))
 
 
 # ---------- война ----------
@@ -478,21 +556,18 @@ func _stop(e: Dictionary) -> void:
 
 ## Время идёт: dt — игровые секунды (реальные секунды × скорость).
 func advance(dt: float) -> void:
-	if squads.is_empty() or dt <= 0.0:
+	if dt <= 0.0:
 		return
 	for sq in squads.duplicate():
 		var e: Dictionary = sq
 		if bool(e["dead"]):
 			continue
 		var st: int = e["state"]
-		if st == ST_IDLE or int(e["recover"]) > 0:
-			continue
-		if st == ST_FIGHT:
-			e["fight_t"] = float(e["fight_t"]) + dt
-			if float(e["fight_t"]) >= BATTLE_SECONDS:
-				_resolve_battle(e)
+		if st == ST_IDLE or st == ST_FIGHT or int(e["recover"]) > 0:
 			continue
 		_advance_move(e, dt)
+	_tick_battles(dt)
+	Navy.advance(self, dt)
 
 
 func _advance_move(e: Dictionary, dt: float) -> void:
@@ -510,10 +585,7 @@ func _advance_move(e: Dictionary, dt: float) -> void:
 	if hostile and p >= 0.5:
 		e["p"] = 0.5
 		if unit_on.has(nxt):
-			e["state"] = ST_FIGHT
-			e["fight_t"] = 0.0
-			if cid == player or world.tile_owner[nxt] == player:
-				sounds.append("battle")
+			_join_battle(e, nxt)
 		else:
 			_capture(cid, world.tile_owner[nxt], nxt)
 			e["crossed"] = true
@@ -555,37 +627,146 @@ func _reroute(e: Dictionary) -> void:
 	e["crossed"] = false
 
 
-func _resolve_battle(e: Dictionary) -> void:
-	var path: Array = e["path"]
-	var target: int = path[0]
-	var att: int = e["owner"]
-	var def: int = world.tile_owner[target]
+# ---------- бои ----------
+## Бой идёт на границе плитки-цели. С одной стороны — атакующие (можно подвести ещё дивизии:
+## они присоединяются, когда доходят до границы), с другой — защитник и его соседние стоящие дивизии.
+## Каждая дивизия наносит урон в секунду, зависящий от её силы и науки; урон делится поровну
+## между дивизиями противника. Бой длится несколько секунд, видно, как падает сила. Случайности нет
+## (кроме абсолютно равного исхода — там жребий).
+
+func _join_battle(e: Dictionary, target: int) -> void:
+	for b in battles:
+		if int(b["target"]) == target:
+			var att: Array = b["att"]
+			att.append(e)
+			e["pre"] = ST_MOVE
+			e["state"] = ST_FIGHT
+			return
 	var d := unit_at(target)
-	e["state"] = ST_MOVE
-	if d.is_empty():
-		_capture(att, def, target)
-		e["crossed"] = true
+	if d.is_empty() or int(d["state"]) == ST_FIGHT:
+		e["p"] = 0.45   # защитник занят другим боем: подождём
 		return
-	# равные условия: одинаковый разброс и одинаковый бонус науки у обеих сторон
-	var a_pow := float(e["hp"]) * rng.randf_range(0.8, 1.2) * (1.0 + float(TECH_BONUS[0]) * float(tech_level(att, 0)))
-	var d_pow := float(d["hp"]) * rng.randf_range(0.8, 1.2) * (1.0 + float(TECH_BONUS[0]) * float(tech_level(def, 0)))
-	var attacker_wins := a_pow > d_pow
-	if a_pow == d_pow:
-		attacker_wins = rng.randf() < 0.5
-	if attacker_wins:
-		# победа: защитник уничтожен, победитель ранен и отдыхает, плитка захвачена
-		_remove_unit(d)
-		e["hp"] = maxf(10.0, float(e["hp"]) - float(d["hp"]) * 0.35)
-		e["recover"] = RECOVER_DAYS
-		e["crossed"] = true
-		_capture(att, def, target)
-		_note(att, def, "Плитка захвачена")
-	else:
-		# поражение: атакующий уничтожен
-		d["hp"] = maxf(10.0, float(d["hp"]) - float(e["hp"]) * 0.35)
-		d["recover"] = RECOVER_DAYS
-		_remove_unit(e)
-		_note(att, def, "Атака отбита")
+	d["pre"] = int(d["state"])
+	d["state"] = ST_FIGHT
+	var defs: Array = [d]
+	for k in 6:
+		var nb := world.neighbor(target, k)
+		if nb < 0 or not unit_on.has(nb):
+			continue
+		var u: Dictionary = unit_on[nb]
+		if int(u["owner"]) == int(d["owner"]) and int(u["state"]) == ST_IDLE and int(u["recover"]) <= 0:
+			u["pre"] = ST_IDLE
+			u["state"] = ST_FIGHT
+			defs.append(u)
+	e["pre"] = ST_MOVE
+	e["state"] = ST_FIGHT
+	battles.append({"target": target, "att": [e], "def": defs, "t": 0.0,
+		"att_owner": int(e["owner"]), "def_owner": int(d["owner"])})
+	if int(e["owner"]) == player or int(d["owner"]) == player:
+		sounds.append("battle")
+
+
+func _unit_dps(u: Dictionary) -> float:
+	var k := 1.0 + float(TECH_BONUS[0]) * float(tech_level(int(u["owner"]), 0))
+	return BATTLE_DPS * (0.5 + 0.5 * float(u["hp"]) / MAX_HP) * k
+
+
+func _alive(list: Array) -> Array:
+	var out: Array = []
+	for u in list:
+		var d: Dictionary = u
+		if not bool(d["dead"]) and float(d["hp"]) > 0.0:
+			out.append(d)
+	return out
+
+
+func _tick_battles(dt: float) -> void:
+	for b in battles.duplicate():
+		var att: Array = _alive(b["att"])
+		var def: Array = _alive(b["def"])
+		b["t"] = float(b["t"]) + dt
+		if att.is_empty() or def.is_empty() or float(b["t"]) > BATTLE_MAX:
+			b["att"] = att
+			b["def"] = def
+			_end_battle(b)
+			continue
+		var a_dmg := 0.0
+		for u in att:
+			a_dmg += _unit_dps(u)
+		var d_dmg := 0.0
+		for u in def:
+			d_dmg += _unit_dps(u)
+		var to_def := a_dmg * dt / float(def.size())
+		var to_att := d_dmg * dt / float(att.size())
+		for u in def:
+			var ud: Dictionary = u
+			ud["hp"] = float(ud["hp"]) - to_def
+		for u in att:
+			var ua: Dictionary = u
+			ua["hp"] = float(ua["hp"]) - to_att
+		var att2 := _alive(att)
+		var def2 := _alive(def)
+		if att2.is_empty() and def2.is_empty():
+			# абсолютно равный исход: жребий оставляет одну дивизию с 1 силой
+			var pool: Array = att
+			if rng.randf() < 0.5:
+				pool = def
+			var lucky: Dictionary = pool[0]
+			lucky["hp"] = 1.0
+			if pool == att:
+				att2 = [lucky]
+			else:
+				def2 = [lucky]
+		# погибших убираем с карты
+		for u in att:
+			var x: Dictionary = u
+			if float(x["hp"]) <= 0.0 and not bool(x["dead"]):
+				_remove_unit(x)
+		for u in def:
+			var y: Dictionary = u
+			if float(y["hp"]) <= 0.0 and not bool(y["dead"]):
+				_remove_unit(y)
+		b["att"] = att2
+		b["def"] = def2
+		if att2.is_empty() or def2.is_empty():
+			_end_battle(b)
+
+
+func _end_battle(b: Dictionary) -> void:
+	battles.erase(b)
+	var att: Array = _alive(b["att"])
+	var def: Array = _alive(b["def"])
+	var target: int = b["target"]
+	if att.is_empty():
+		# оборона удалась: защитники отдыхают и возвращаются к прежнему делу
+		for u in def:
+			var d: Dictionary = u
+			d["state"] = int(d["pre"])
+			d["recover"] = RECOVER_DAYS
+		_note(int(b["att_owner"]), int(b["def_owner"]), "Атака отбита")
+		_rebuild()
+		return
+	if def.is_empty():
+		var att_owner: int = int(att[0]["owner"])
+		var def_owner2: int = int(b["def_owner"])
+		for u in att:
+			var a: Dictionary = u
+			a["state"] = ST_MOVE
+			a["recover"] = RECOVER_DAYS
+			a["crossed"] = true
+		if def_owner2 != att_owner and def_owner2 >= 0:
+			_capture(att_owner, def_owner2, target)
+			_note(att_owner, def_owner2, "Плитка захвачена")
+		_rebuild()
+		return
+	# время вышло, обе стороны живы: атакующие отступают, защитники возвращаются к делам
+	for u in att:
+		var a2: Dictionary = u
+		_stop(a2)
+	for u in def:
+		var d2: Dictionary = u
+		d2["state"] = int(d2["pre"])
+	_rebuild()
 
 
 func _note(att: int, def: int, text: String) -> void:
@@ -674,6 +855,7 @@ func _annex(att: int, def: int) -> void:
 		if int(b["cid"]) != def:
 			q.append(b)
 	build_queue = q
+	Navy.remove_country(self, def)
 	_rebuild()
 	map_dirty = true
 	if att == player:
@@ -779,6 +961,7 @@ func start_build(cid: int, t: int) -> bool:
 		"tile": t,
 		"days_left": BUILD_DAYS,
 		"new_city": world.tile_city[t] == 0,
+		"kind": "factory",
 	})
 	return true
 
@@ -803,6 +986,13 @@ func _progress_builds() -> void:
 		var t: int = e["tile"]
 		var cid: int = e["cid"]
 		var cn: Dictionary = world.countries[cid]
+		if String(e.get("kind", "factory")) == "port":
+			world.tile_port[t] = 1
+			map_dirty = true
+			if cid == player:
+				events.append("Порт построен (плитка %d, %d)" % [world.col_of(t), world.row_of(t)])
+				sounds.append("build")
+			continue
 		world.tile_factories[t] = mini(255, world.tile_factories[t] + 1)
 		cn["factories"] = int(cn["factories"]) + 1
 		if world.tile_city[t] == 0:

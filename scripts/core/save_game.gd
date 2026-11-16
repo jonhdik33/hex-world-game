@@ -25,7 +25,13 @@ static func save(world, state, seed_value: int) -> bool:
 	var squads: Array = []
 	for sq in state.squads:
 		var e: Dictionary = sq
-		squads.append(e.duplicate(true))
+		var c: Dictionary = e.duplicate(true)
+		if int(c["state"]) == 2:
+			c["state"] = int(c["pre"])   # бой не сохраняем: дивизия вернётся к прежнему состоянию
+		squads.append(c)
+	var ships: Array = []
+	for sh in state.ships:
+		ships.append(Dictionary(sh).duplicate(true))
 	var war: Array = []
 	for k in state.at_war.keys():
 		war.append([int(k), int(state.war_since.get(k, 0))])
@@ -46,6 +52,11 @@ static func save(world, state, seed_value: int) -> bool:
 		"research": state.research,
 		"build_queue": state.build_queue,
 		"squads": squads,
+		"ships": ships,
+		"next_ship": state._next_ship_id,
+		"bot_style": state.bot_style,
+		"active_bot": state.active_bot,
+		"port": Array(world.tile_port),
 		"next_id": state._next_id,
 		"war": war,
 		"truce": truce,
@@ -134,21 +145,43 @@ static func load_into(world, state) -> bool:
 	for b in d["build_queue"]:
 		var bd: Dictionary = b
 		bq.append({"cid": int(bd["cid"]), "tile": int(bd["tile"]),
-			"days_left": int(bd["days_left"]), "new_city": bool(bd["new_city"])})
+			"days_left": int(bd["days_left"]), "new_city": bool(bd["new_city"]),
+			"kind": String(bd.get("kind", "factory"))})
 	state.build_queue = bq
 	var squads: Array = []
 	for sq in d["squads"]:
-		var s: Dictionary = sq
-		var path: Array = []
-		for p in s["path"]:
-			path.append(int(p))
-		squads.append({
-			"id": int(s["id"]), "owner": int(s["owner"]), "tile": int(s["tile"]), "from": int(s["from"]),
-			"hp": float(s["hp"]), "path": path, "dest": int(s["dest"]), "p": float(s["p"]),
-			"crossed": bool(s["crossed"]), "state": int(s["state"]), "recover": int(s["recover"]),
-			"fight_t": float(s["fight_t"]), "wait_t": float(s["wait_t"]), "dead": false,
-		})
+		squads.append(_unit_from(sq))
 	state.squads = squads
+	state.battles = []
+	var ships: Array = []
+	for sh in d.get("ships", []):
+		var sd: Dictionary = sh
+		var path: Array = []
+		for c in sd["path"]:
+			path.append(int(c))
+		var cargo: Dictionary = {}
+		var cg: Dictionary = sd["cargo"]
+		if not cg.is_empty():
+			cargo = _unit_from(cg)
+		ships.append({"id": int(sd["id"]), "owner": int(sd["owner"]), "cell": int(sd["cell"]),
+			"from_cell": int(sd["from_cell"]), "path": path, "p": float(sd["p"]), "state": int(sd["state"]),
+			"cargo": cargo, "land_tile": int(sd["land_tile"])})
+	state.ships = ships
+	state._next_ship_id = int(d.get("next_ship", 1))
+	var port: Array = d.get("port", [])
+	if port.size() == owner.size():
+		for i in port.size():
+			world.tile_port[i] = int(port[i])
+	var bs: Array = d.get("bot_style", [])
+	if bs.size() == state.bot_style.size():
+		state.bot_style = []
+		for v in bs:
+			state.bot_style.append(int(v))
+	var ab: Array = d.get("active_bot", [])
+	if ab.size() == state.active_bot.size():
+		state.active_bot = []
+		for v in ab:
+			state.active_bot.append(bool(v))
 	state._next_id = int(d["next_id"])
 	state.at_war = {}
 	state.war_since = {}
@@ -172,3 +205,16 @@ static func _floats(src: Array) -> Array:
 	for v in src:
 		out.append(float(v))
 	return out
+
+
+static func _unit_from(sq: Dictionary) -> Dictionary:
+	var path: Array = []
+	for p in sq["path"]:
+		path.append(int(p))
+	return {
+		"id": int(sq["id"]), "owner": int(sq["owner"]), "tile": int(sq["tile"]), "from": int(sq["from"]),
+		"hp": float(sq["hp"]), "path": path, "dest": int(sq["dest"]), "p": float(sq["p"]),
+		"crossed": bool(sq["crossed"]), "state": int(sq["state"]), "recover": int(sq["recover"]),
+		"fight_t": float(sq["fight_t"]), "wait_t": float(sq["wait_t"]), "dead": false,
+		"pre": int(sq.get("pre", 0)),
+	}

@@ -105,7 +105,8 @@ func select_land(i: int) -> void:
 	_show_highlight(pts, c, 3.0)
 
 
-## Выделяет только ту часть морской ячейки, что не закрыта сушей (вместе с линией берега).
+## Выделяет только видимую часть морской ячейки: её края, не закрытые сушей,
+## и береговую линию суши внутри ячейки.
 func select_sea(j: int) -> void:
 	if world == null or j < 0:
 		clear_selection()
@@ -115,23 +116,48 @@ func select_sea(j: int) -> void:
 	var hex_pts := PackedVector2Array()
 	for k in 6:
 		hex_pts.append(c + _sea_off[k])
-	var b := world.bounds()
-	var rect_pts := PackedVector2Array([
-		b.position, Vector2(b.end.x, b.position.y), b.end, Vector2(b.position.x, b.end.y)])
-	var pieces: Array = Geometry2D.intersect_polygons(hex_pts, rect_pts)
 	var reach := world.sea_grid.r + world.hex_r * 2.0
+	var near: Array = []
 	for i in world.tile_total():
-		if world.land[i] == 0 or pieces.is_empty():
-			continue
-		if world.center_of(i).distance_to(c) > reach:
-			continue
-		var next: Array = []
-		for pc in pieces:
-			var piece: PackedVector2Array = pc
-			var poly: PackedVector2Array = _poly[i]
-			next.append_array(Geometry2D.clip_polygons(piece, poly))
-		pieces = next
-	_sea_outline.set_polys(pieces)
+		if world.land[i] == 1 and world.center_of(i).distance_to(c) <= reach:
+			near.append(i)
+	var segs := PackedVector2Array()
+	# береговая линия суши внутри ячейки
+	for t in near:
+		var ti: int = t
+		for k in 6:
+			if not _is_sea(world.neighbor(ti, k)):
+				continue
+			var ep := _edge_pts(ti, k)
+			var q := 0
+			while q + 1 < ep.size():
+				var mid := (ep[q] + ep[q + 1]) * 0.5
+				if Geometry2D.is_point_in_polygon(mid, hex_pts):
+					segs.append(ep[q])
+					segs.append(ep[q + 1])
+				q += 2
+	# края самой ячейки, которые не лежат на суше и внутри мира
+	var b := world.bounds()
+	var steps := 24
+	for k in 6:
+		var a: Vector2 = hex_pts[k]
+		var e: Vector2 = hex_pts[(k + 1) % 6]
+		for q2 in steps:
+			var p0 := a.lerp(e, float(q2) / float(steps))
+			var p1 := a.lerp(e, float(q2 + 1) / float(steps))
+			var m := (p0 + p1) * 0.5
+			if not b.has_point(m):
+				continue
+			var covered := false
+			for t2 in near:
+				var poly: PackedVector2Array = _poly[int(t2)]
+				if Geometry2D.is_point_in_polygon(m, poly):
+					covered = true
+					break
+			if not covered:
+				segs.append(p0)
+				segs.append(p1)
+	_sea_outline.set_segments(segs)
 
 
 func clear_selection() -> void:
@@ -346,6 +372,18 @@ func _draw() -> void:
 		else:
 			draw_circle(cc, world.hex_r * 0.40, Color(0.05, 0.05, 0.1, 0.9))
 			draw_circle(cc, world.hex_r * 0.28, Color(0.95, 0.95, 0.95, 1))
+
+	# порты: синий значок с якорем у города
+	for i in world.tile_total():
+		if world.tile_port[i] == 0:
+			continue
+		var pc := world.center_of(i) + Vector2(world.hex_r * 0.5, world.hex_r * 0.42)
+		var pr := world.hex_r * 0.3
+		draw_circle(pc, pr + 1.5, Color(0.05, 0.05, 0.1, 0.95))
+		draw_circle(pc, pr, Color(0.15, 0.45, 0.85))
+		draw_line(pc + Vector2(0, -pr * 0.6), pc + Vector2(0, pr * 0.6), Color(1, 1, 1), 1.6)
+		draw_line(pc + Vector2(-pr * 0.5, -pr * 0.25), pc + Vector2(pr * 0.5, -pr * 0.25), Color(1, 1, 1), 1.6)
+		draw_arc(pc + Vector2(0, pr * 0.1), pr * 0.5, 0.0, PI, 8, Color(1, 1, 1), 1.6)
 
 	# стройки — жёлтые кольца
 	for t in _construction:

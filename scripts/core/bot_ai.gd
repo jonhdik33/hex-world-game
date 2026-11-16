@@ -7,10 +7,9 @@ extends RefCounted
 const MAX_ORDERS_PER_THINK := 3
 const BUILD_RESERVE := 2000.0      # столько денег должно остаться после стройки
 const RECRUIT_RESERVE := 3000.0
-const BOT_PEACE_DAYS := 60          # до этого дня боты не объявляют войну игроку
 
 
-static func think(st, cid: int, aggr: float) -> void:
+static func think(st, cid: int, aggr: float, active: bool) -> void:
 	var world = st.world
 	var cn: Dictionary = world.countries[cid]
 	if int(cn["tiles"]) <= 0:
@@ -20,6 +19,8 @@ static func think(st, cid: int, aggr: float) -> void:
 		if world.land[i] == 1 and world.tile_owner[i] == cid:
 			own.append(i)
 	_economy(st, cid, own)
+	if not active:
+		return   # неактивные боты только развиваются
 	_war(st, cid, own, aggr)
 	_move(st, cid, own)
 
@@ -95,6 +96,8 @@ static func _war(st, cid: int, own: Array, aggr: float) -> void:
 				st.make_peace(cid, o)
 	if st.day < 20 or _wars_count(st, cid) > 0:
 		return
+	if int(st.bot_style[cid]) == 2:
+		return   # оборонцы сами не нападают
 	if st.rng.randf() > aggr * 0.5:
 		return
 	var my_army: int = st.army[cid]
@@ -102,7 +105,7 @@ static func _war(st, cid: int, own: Array, aggr: float) -> void:
 	var target_army := 0
 	for o in _neighbor_countries(st, cid, own):
 		var oi: int = o
-		if oi == st.player and st.day < BOT_PEACE_DAYS:
+		if oi == st.player and st.day < st.bot_peace_days():
 			continue
 		var a: int = st.army[oi]
 		# нападаем на соседа, который не сильнее нас (с запасом)
@@ -127,6 +130,8 @@ static func _move(st, cid: int, own: Array) -> void:
 			enemies[o] = true
 	if enemies.is_empty():
 		return
+	var style: int = st.bot_style[cid]
+	var ratio: float = st.bot_attack_ratio()
 	var capital: int = world.countries[cid]["capital"]
 	# фронт: свободные свои плитки рядом с врагом
 	var front: Array = []
@@ -142,44 +147,46 @@ static func _move(st, cid: int, own: Array) -> void:
 	var orders := 0
 	var taken := {}
 	for sq in st.squads.duplicate():
-		if orders >= MAX_ORDERS_PER_THINK:
+		if orders >= st.bot_orders():
 			break
 		var e: Dictionary = sq
 		if int(e["owner"]) != cid or int(e["state"]) != 0 or int(e["recover"]) > 0:
 			continue
+		if st.rng.randf() < st.bot_miss_chance():
+			continue   # бот «зазевался»
 		var at: int = e["tile"]
 		if at == capital and int(st.army[cid]) < 3:
 			continue
-		# главная цель — столица ближайшего врага: идём к ней кратчайшим путём
-		var cap_t := _nearest_enemy_capital(st, at, enemies)
-		if cap_t >= 0:
-			var path: Array = st.find_path(cid, at, cap_t)
-			if not path.is_empty():
-				var first: int = path[0]
-				var dfn: Dictionary = st.unit_at(first)
-				var weaker: bool = world.tile_owner[first] != cid and not dfn.is_empty() and float(e["hp"]) < float(dfn["hp"]) * 1.1
-				if weaker:
-					continue   # слабее защитника на пути: ждём подкрепления / лечения
-				var resc: Dictionary = st.order_move(cid, at, cap_t)
-				if resc["ok"]:
-					orders += 1
-					continue
-		# рядом враг: атакуем, если не слабее защитника (или плитка пуста)
+		# соседний враг: атакуем, если не слабее защитника (с запасом по сложности)
 		var attacked := false
 		for k in 6:
-			var nb: int = world.neighbor(at, k)
-			if nb < 0 or world.land[nb] == 0 or not enemies.has(world.tile_owner[nb]):
+			var nb2: int = world.neighbor(at, k)
+			if nb2 < 0 or world.land[nb2] == 0 or not enemies.has(world.tile_owner[nb2]):
 				continue
-			var d: Dictionary = st.unit_at(nb)
-			if d.is_empty() or float(e["hp"]) >= float(d["hp"]) * 1.1:
-				var res: Dictionary = st.order_move(cid, at, nb)
+			var d: Dictionary = st.unit_at(nb2)
+			if d.is_empty() or float(e["hp"]) >= float(d["hp"]) * ratio:
+				var res: Dictionary = st.order_move(cid, at, nb2)
 				if res["ok"]:
 					orders += 1
 					attacked = true
 					break
-		if attacked:
-			continue
-		# иначе идём к ближайшей свободной точке фронта
+		if attacked or style == 2:
+			continue   # оборонцы дальше своих границ не идут
+		# агрессоры рвутся к столице врага (иногда к случайной), захватчики берут ближние плитки
+		if style == 0:
+			var cap_t := _pick_enemy_capital(st, at, enemies)
+			if cap_t >= 0:
+				var path: Array = st.find_path(cid, at, cap_t)
+				if not path.is_empty():
+					var first: int = path[0]
+					var dfn: Dictionary = st.unit_at(first)
+					var weaker: bool = world.tile_owner[first] != cid and not dfn.is_empty() and float(e["hp"]) < float(dfn["hp"]) * ratio
+					if not weaker:
+						var resc: Dictionary = st.order_move(cid, at, cap_t)
+						if resc["ok"]:
+							orders += 1
+							continue
+		# к ближайшей свободной точке фронта
 		var best := -1
 		var best_d := 0.0
 		var here: Vector2 = world.center_of(at)
@@ -196,6 +203,15 @@ static func _move(st, cid: int, own: Array) -> void:
 			if res2["ok"]:
 				taken[best] = true
 				orders += 1
+
+
+## Цель для «агрессора»: чаще ближайшая вражеская столица, иногда случайная.
+static func _pick_enemy_capital(st, from_tile: int, enemies: Dictionary) -> int:
+	if st.rng.randf() < 0.3:
+		var keys: Array = enemies.keys()
+		var o: int = keys[st.rng.randi_range(0, keys.size() - 1)]
+		return int(st.world.countries[o]["capital"])
+	return _nearest_enemy_capital(st, from_tile, enemies)
 
 
 ## Столица ближайшего (по прямой) врага, с которым война.

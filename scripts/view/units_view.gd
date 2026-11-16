@@ -36,6 +36,11 @@ func _process(_delta: float) -> void:
 		if int(e["state"]) != GameState.ST_IDLE:
 			queue_redraw()
 			return
+	for sh in state.ships:
+		var shd: Dictionary = sh
+		if int(shd["state"]) == 1:
+			queue_redraw()
+			return
 
 
 func _owner_color(owner_id: int) -> Color:
@@ -116,34 +121,78 @@ func _draw() -> void:
 		if int(u["recover"]) > 0:
 			draw_string(font, pos + Vector2(s * 0.3, -s * 0.3), "z", HORIZONTAL_ALIGNMENT_LEFT, -1, fs, Color(1.0, 0.9, 0.3))
 
-	# стрелки походов и бои
+	# стрелки походов (бойцы в бою рисуются ниже)
 	for sq in state.squads:
 		var e2: Dictionary = sq
-		var st: int = e2["state"]
-		if st == GameState.ST_IDLE:
+		if int(e2["state"]) != GameState.ST_MOVE:
 			continue
 		var path2: Array = e2["path"]
 		if path2.is_empty():
 			continue
-		var nxt: int = path2[0]
-		var p: float = e2["p"]
-		# стрелка тянется от плитки, где начался шаг, к следующей; на середине отряд переходит
 		var a := world.center_of(int(e2["from"]))
-		var b := world.center_of(nxt)
-		var col2 := _owner_color(int(e2["owner"]))
-		if st == GameState.ST_FIGHT:
-			_draw_battle(a, b, float(e2["fight_t"]), col2, s)
-		else:
-			_arrow(a, a.lerp(b, clampf(p, 0.0, 1.0)), col2, s * 0.22)
+		var b := world.center_of(int(path2[0]))
+		_arrow(a, a.lerp(b, clampf(float(e2["p"]), 0.0, 1.0)), _owner_color(int(e2["owner"])), s * 0.22)
+
+	# бои: атакующие тянутся к границе, защитники отвечают, на стыке вспышка и скрещённые линии
+	for bt in state.battles:
+		var bd: Dictionary = bt
+		var tgt: Vector2 = world.center_of(int(bd["target"]))
+		var tt: float = float(bd["t"])
+		var first_mid := tgt
+		for au in bd["att"]:
+			var ad: Dictionary = au
+			var af := world.center_of(int(ad["from"]))
+			var amid := (af + tgt) * 0.5
+			first_mid = amid
+			_arrow(af, af.lerp(amid, 0.95), _owner_color(int(ad["owner"])), s * 0.24)
+			_arrow(tgt, tgt.lerp(amid, 0.9), Color(1.0, 0.35, 0.3), s * 0.2)
+		for du in bd["def"]:
+			var dd: Dictionary = du
+			var dpos := world.center_of(int(dd["tile"]))
+			if dpos.distance_to(tgt) > 1.0:
+				_arrow(dpos, dpos.lerp(tgt, 0.8), Color(1.0, 0.7, 0.3), s * 0.18)   # подкрепление защитников
+		_draw_clash(first_mid, tt, s)
+
+	# корабли: лодка с флажком цвета страны; в трюме дивизия — точка
+	for sh in state.ships:
+		var shd: Dictionary = sh
+		var pos2 := _ship_pos(shd)
+		var pth: Array = shd["path"]
+		if int(shd["state"]) == 1 and int(shd["owner"]) == player_country and pth.size() >= 1:
+			var prev2 := pos2
+			for c in pth:
+				var np: Vector2 = world.sea_anchor[int(c)]
+				draw_dashed_line(prev2, np, Color(1, 1, 1, 0.5), 2.0, 5.0)
+				prev2 = np
+		_boat(pos2, s, _owner_color(int(shd["owner"])), not Dictionary(shd["cargo"]).is_empty())
 
 
-func _draw_battle(a: Vector2, b: Vector2, t: float, col: Color, s: float) -> void:
-	var mid := (a + b) * 0.5
-	var k := clampf(t / GameState.BATTLE_SECONDS, 0.0, 1.0)
-	_arrow(a, a.lerp(mid, 0.92), col, s * 0.24)
-	_arrow(b, b.lerp(mid, 0.92), Color(1.0, 0.35, 0.3), s * 0.24)
-	var pulse := 0.6 + 0.4 * sin(t * 18.0)
-	draw_circle(mid, s * (0.35 + 0.5 * k) * pulse, Color(1.0, 0.8, 0.2, 0.35))
+func _ship_pos(sh: Dictionary) -> Vector2:
+	var a: Vector2 = world.sea_anchor[int(sh["cell"])]
+	var pth: Array = sh["path"]
+	if int(sh["state"]) == 1 and not pth.is_empty():
+		var b: Vector2 = world.sea_anchor[int(pth[0])]
+		return a.lerp(b, clampf(float(sh["p"]), 0.0, 1.0))
+	return a
+
+
+func _boat(c: Vector2, s: float, col: Color, loaded: bool) -> void:
+	var dark := Color(0.05, 0.05, 0.1, 0.95)
+	var hull := PackedVector2Array([c + Vector2(-0.8, 0.0) * s, c + Vector2(0.8, 0.0) * s,
+		c + Vector2(0.5, 0.45) * s, c + Vector2(-0.5, 0.45) * s])
+	draw_colored_polygon(hull, dark)
+	var hull_in := PackedVector2Array([c + Vector2(-0.68, 0.05) * s, c + Vector2(0.68, 0.05) * s,
+		c + Vector2(0.44, 0.36) * s, c + Vector2(-0.44, 0.36) * s])
+	draw_colored_polygon(hull_in, Color(0.85, 0.85, 0.9))
+	draw_line(c + Vector2(0.0, 0.0) * s, c + Vector2(0.0, -0.8) * s, dark, 0.1 * s)
+	draw_colored_polygon(PackedVector2Array([c + Vector2(0.0, -0.8) * s, c + Vector2(0.55, -0.55) * s, c + Vector2(0.0, -0.3) * s]), col)
+	if loaded:
+		draw_circle(c + Vector2(-0.35, -0.1) * s, 0.16 * s, Color(0.4, 1.0, 0.5))
+
+
+func _draw_clash(mid: Vector2, t: float, s: float) -> void:
+	var pulse := 0.6 + 0.4 * sin(t * 12.0)
+	draw_circle(mid, s * 0.7 * pulse, Color(1.0, 0.8, 0.2, 0.35))
 	var r := s * 0.45
 	draw_line(mid + Vector2(-r, -r), mid + Vector2(r, r), Color(1, 1, 1), 3.0)
 	draw_line(mid + Vector2(-r, r), mid + Vector2(r, -r), Color(1, 1, 1), 3.0)
