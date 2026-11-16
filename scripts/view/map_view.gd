@@ -35,6 +35,7 @@ var _sea_layer: Node2D               # море (рисуется один ра�
 var _land_mesh: MeshInstance2D       # суша одной сеткой: смена цвета плитки = обновление цветов, без перерисовки
 var _top_layer: Node2D               # границы, города, порты, стройки, рамка
 var _mesh := ArrayMesh.new()
+var _owner_hash: int = -1
 var _mv := PackedVector2Array()      # вершины сетки суши
 var _mi := PackedInt32Array()        # индексы треугольников
 var _mc := PackedColorArray()        # цвета вершин
@@ -84,6 +85,21 @@ func setup(w: World) -> void:
 ## Карта изменилась (захват плитки, стройка, порт): быстро обновляем цвета и линии.
 func refresh() -> void:
 	_update_dynamic()
+
+
+## Страховка: если владельцы плиток изменились, а refresh() не позвали, перекрашиваем сами.
+func sync_if_changed() -> void:
+	if world == null or _land_mesh == null:
+		return
+	if _hash_owners() != _owner_hash:
+		_update_dynamic()
+
+
+func _hash_owners() -> int:
+	var h := 7
+	for i in world.tile_total():
+		h = (h * 31 + int(world.tile_owner[i]) + 2 + int(world.tile_port[i]) * 977) % 1000003
+	return h
 
 
 func set_construction(tiles: Array) -> void:
@@ -368,14 +384,18 @@ func _update_dynamic() -> void:
 					_border.append_array(_edge_pts(i, k))
 				else:
 					_grid.append_array(_edge_pts(i, k))
-	_mesh.clear_surfaces()
+	# каждый раз новая сетка: цвета гарантированно обновляются на экране
+	var fresh := ArrayMesh.new()
 	if _mv.size() >= 3:
 		var arrays: Array = []
 		arrays.resize(Mesh.ARRAY_MAX)
 		arrays[Mesh.ARRAY_VERTEX] = _mv
 		arrays[Mesh.ARRAY_COLOR] = _mc
 		arrays[Mesh.ARRAY_INDEX] = _mi
-		_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+		fresh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	_mesh = fresh
+	_land_mesh.mesh = fresh
+	_owner_hash = _hash_owners()
 	_top_layer.queue_redraw()
 
 

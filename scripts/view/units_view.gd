@@ -70,6 +70,14 @@ func _soldier(c: Vector2, s: float, col: Color) -> void:
 	draw_arc(c + Vector2(0.0, -0.40) * s, 0.2 * s, PI, TAU, 8, col, 0.1 * s)               # каска
 
 
+func _ellipse(c: Vector2, rx: float, ry: float) -> PackedVector2Array:
+	var pts := PackedVector2Array()
+	for k in 14:
+		var a := TAU * float(k) / 14.0
+		pts.append(c + Vector2(cos(a) * rx, sin(a) * ry))
+	return pts
+
+
 func _arrow(a: Vector2, b: Vector2, col: Color, width: float) -> void:
 	var d := b - a
 	var ln := d.length()
@@ -109,7 +117,28 @@ func _draw() -> void:
 	for sq in state.squads:
 		var u: Dictionary = sq
 		var o: int = u["owner"]
-		var pos := world.center_of(int(u["tile"])) + Vector2(-s * 0.1, s * 0.05)
+		var shift := Vector2(-s * 0.1, s * 0.05)
+		var pos := world.center_of(int(u["tile"])) + shift
+		var upath: Array = u["path"]
+		var walking := int(u["state"]) == GameState.ST_MOVE and not upath.is_empty() and float(u["p"]) > 0.0
+		var heading := Vector2.ZERO
+		if walking:
+			# солдат идёт плавно: стоит на острие стрелки, а на плитку «приходит» без скачка
+			var nxt := world.center_of(int(upath[0]))
+			var from_c := world.center_of(int(u["tile"]))
+			var pp := clampf(float(u["p"]), 0.0, 1.0)
+			pos = from_c.lerp(nxt, pp) + shift
+			heading = (nxt - from_c).normalized()
+			pos.y -= absf(sin(float(Time.get_ticks_msec()) / 110.0)) * s * 0.08   # шаг
+			# след за солдатом и наконечник впереди
+			var trail_a := from_c + shift
+			draw_line(trail_a, pos, Color(0.05, 0.05, 0.1, 0.55), s * 0.2)
+			draw_line(trail_a, pos, Color(_owner_color(o), 0.75), s * 0.12)
+			var side := Vector2(-heading.y, heading.x)
+			var hb := pos + heading * s * 0.45
+			draw_colored_polygon(PackedVector2Array([hb + heading * s * 0.38, hb + side * s * 0.22, hb - side * s * 0.22]), _owner_color(o))
+		# мягкая тень под солдатом
+		draw_colored_polygon(_ellipse(pos + Vector2(0, s * 0.5), s * 0.38, s * 0.12), Color(0, 0, 0, 0.28))
 		_soldier(pos, s * 0.9, _owner_color(o))
 		var hp: float = float(u["hp"]) / GameState.MAX_HP
 		var bar := Rect2(pos + Vector2(-s * 0.4, s * 0.55), Vector2(s * 0.8, s * 0.12))
@@ -121,17 +150,6 @@ func _draw() -> void:
 		if int(u["recover"]) > 0:
 			draw_string(font, pos + Vector2(s * 0.3, -s * 0.3), "z", HORIZONTAL_ALIGNMENT_LEFT, -1, fs, Color(1.0, 0.9, 0.3))
 
-	# стрелки походов (бойцы в бою рисуются ниже)
-	for sq in state.squads:
-		var e2: Dictionary = sq
-		if int(e2["state"]) != GameState.ST_MOVE:
-			continue
-		var path2: Array = e2["path"]
-		if path2.is_empty():
-			continue
-		var a := world.center_of(int(e2["from"]))
-		var b := world.center_of(int(path2[0]))
-		_arrow(a, a.lerp(b, clampf(float(e2["p"]), 0.0, 1.0)), _owner_color(int(e2["owner"])), s * 0.22)
 
 	# бои: атакующие тянутся к границе, защитники отвечают, на стыке вспышка и скрещённые линии
 	for bt in state.battles:
@@ -157,6 +175,7 @@ func _draw() -> void:
 	for sh in state.ships:
 		var shd: Dictionary = sh
 		var pos2 := _ship_pos(shd)
+		pos2.y += sin(float(Time.get_ticks_msec()) / 450.0 + float(int(shd["id"]))) * s * 0.06   # качка
 		if int(shd["state"]) == 0:
 			pos2 += Vector2(float(int(shd["id"]) % 3 - 1) * s * 1.6, 0.0)   # корабли в одной ячейке не слипаются
 		var pth: Array = shd["path"]

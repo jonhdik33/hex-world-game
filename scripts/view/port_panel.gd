@@ -61,7 +61,7 @@ func rebuild(st, cid: int, sel: int) -> void:
 	for p in ports:
 		var pi: int = p
 		n += 1
-		var here := Navy.ships_at_port(st, cid, pi)
+		var here := st.navy_ships_at_port(cid, pi)
 		var wars := 0
 		for q in here:
 			var qd: Dictionary = q
@@ -77,21 +77,21 @@ func rebuild(st, cid: int, sel: int) -> void:
 	var buy := HBoxContainer.new()
 	buy.add_theme_constant_override("separation", 8)
 	for ty in [Navy.T_CARGO, Navy.T_WAR]:
-		var reason := Navy.ship_block_reason(st, cid, t, ty)
-		var txt := "Купить %s\n%s · %s/день" % [Navy.type_name(ty).to_lower(), GS.fmt(Navy.cost_of(ty)), GS.fmt(Navy.upkeep_of(ty))]
+		var reason := st.navy_ship_block_reason(cid, t, ty)
+		var txt := "Купить %s\n%s · %s/день" % [st.navy_type_name(ty).to_lower(), GS.fmt(st.navy_cost_of(ty)), GS.fmt(st.navy_upkeep_of(ty))]
 		var b := _button(txt, "buy_%d" % ty, -1, t, reason == "")
 		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		buy.add_child(b)
 	add_child(buy)
-	var why := Navy.ship_block_reason(st, cid, t, Navy.T_CARGO)
+	var why := st.navy_ship_block_reason(cid, t, Navy.T_CARGO)
 	if why == "Максимум кораблей (%d)" % Navy.MAX_SHIPS:
 		add_child(_label(why))
 
 	add_child(_label("Корабли в порту", 22))
-	var ships := Navy.ships_at_port(st, cid, t)
+	var ships := st.navy_ships_at_port(cid, t)
 	if ships.is_empty():
 		add_child(_label("Пока нет. Купите корабль выше."))
-	var loadable := Navy.loadable_tiles(st, cid, t)
+	var loadable := st.navy_loadable_tiles(cid, t)
 	for s in ships:
 		var sh: Dictionary = s
 		var id: int = sh["id"]
@@ -103,7 +103,7 @@ func rebuild(st, cid: int, sel: int) -> void:
 			state_txt = "артиллерия, обстрел берега"
 		elif not cargo.is_empty():
 			state_txt = "везёт дивизию (сила %d)" % int(float(cargo["hp"]))
-		row.add_child(_label("%s корабль №%d — %s" % [Navy.type_name(ty2), id, state_txt]))
+		row.add_child(_label("%s корабль №%d — %s" % [st.navy_type_name(ty2), id, state_txt]))
 		var btns := HBoxContainer.new()
 		btns.add_theme_constant_override("separation", 8)
 		if ty2 == Navy.T_CARGO:
@@ -115,7 +115,7 @@ func rebuild(st, cid: int, sel: int) -> void:
 			else:
 				btns.add_child(_button("Выгрузить", "unload", id, t))
 		if ty2 == Navy.T_WAR:
-			var tg := Navy.bombard_targets(st, cid, sh)
+			var tg := st.navy_bombard_targets(cid, sh)
 			for k in mini(tg.size(), 2):
 				btns.add_child(_button("Обстрелять", "bomb", id, int(tg[k])))
 		btns.add_child(_button("Выбрать корабль", "sail", id, t))

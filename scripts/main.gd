@@ -110,7 +110,8 @@ func _process(delta: float) -> void:
 		return
 	var adt: float = delta * float(ANIM_FACTOR[speed])
 	state.advance(adt)
-	Navy.advance(state, adt)
+	state.navy_advance(adt)
+	map_view.sync_if_changed()
 	if state.events.size() > 0 or state.map_dirty or state.sounds.size() > 0:
 		_after_ticks()
 	_accum += delta
@@ -232,10 +233,10 @@ func _on_action(id: String) -> void:
 	if playing and id.begins_with("bomb_"):
 		var ship := _selected_ship()
 		var tt := int(id.substr(5))
-		if Navy.bombard(state, state.player, ship, tt):
+		if state.navy_bombard(state.player, ship, tt):
 			hud.show_event("Обстрел начат")
 		else:
-			hud.show_event(Navy.bombard_reason(state, state.player, ship, tt))
+			hud.show_event(state.navy_bombard_reason(state.player, ship, tt))
 		units.refresh()
 		hud.set_actions([])
 		return
@@ -257,7 +258,7 @@ func _on_action(id: String) -> void:
 			hud.show_event("Дивизия распущена")
 			units.refresh()
 	elif id == "port":
-		if Navy.start_port(state, cid, t):
+		if state.navy_start_port(cid, t):
 			hud.show_event("Начато строительство порта: %d дн." % Navy.PORT_DAYS)
 			map_view.set_construction(state.construction_tiles(cid))
 	elif id == "open_port":
@@ -294,7 +295,7 @@ func _has_ready_unit(t: int) -> bool:
 ## Корабль, которым сейчас управляет игрок (по номеру, иначе первый в выбранной ячейке).
 func _selected_ship() -> Dictionary:
 	if _sel_ship_id > 0:
-		var sh := Navy.ship_by_id(state, _sel_ship_id)
+		var sh := state.navy_ship_by_id(_sel_ship_id)
 		if not sh.is_empty() and int(sh["cell"]) == _ship_cell and int(sh["state"]) == 0 and int(sh["owner"]) == state.player:
 			return sh
 	return _own_ship_at(_ship_cell)
@@ -317,7 +318,7 @@ func _on_menu_toggled(index: int, on: bool) -> void:
 func _on_port_action(kind: String, ship_id: int, tile: int) -> void:
 	sfx.play("click")
 	var cid := state.player
-	var ship := Navy.ship_by_id(state, ship_id)
+	var ship := state.navy_ship_by_id(ship_id)
 	if kind == "select":
 		_port_tile = tile
 		hud.port_panel.rebuild(state, cid, _port_tile)
@@ -325,26 +326,26 @@ func _on_port_action(kind: String, ship_id: int, tile: int) -> void:
 	if kind.begins_with("buy_"):
 		var ty := int(kind.substr(4))
 		_port_tile = tile
-		if Navy.build_ship(state, cid, _port_tile, ty):
-			hud.show_event("Корабль куплен: %s" % Navy.type_name(ty).to_lower())
+		if state.navy_build_ship(cid, _port_tile, ty):
+			hud.show_event("Корабль куплен: %s" % state.navy_type_name(ty).to_lower())
 			sfx.play("build")
 		else:
-			hud.show_event(Navy.ship_block_reason(state, cid, _port_tile, ty))
+			hud.show_event(state.navy_ship_block_reason(cid, _port_tile, ty))
 	elif kind == "load":
-		if Navy.load_unit(state, cid, tile, ship):
+		if state.navy_load_unit(cid, tile, ship):
 			hud.show_event("Дивизия погружена")
 		else:
 			hud.show_event("Погрузка не удалась")
 	elif kind == "unload":
-		if Navy.unload_unit(state, cid, ship):
+		if state.navy_unload_unit(cid, ship):
 			hud.show_event("Дивизия выгружена")
 		else:
 			hud.show_event("Нет свободной плитки для выгрузки")
 	elif kind == "bomb":
-		if Navy.bombard(state, cid, ship, tile):
+		if state.navy_bombard(cid, ship, tile):
 			hud.show_event("Обстрел начат")
 		else:
-			hud.show_event(Navy.bombard_reason(state, cid, ship, tile))
+			hud.show_event(state.navy_bombard_reason(cid, ship, tile))
 	elif kind == "sail":
 		if ship.is_empty():
 			return
@@ -370,7 +371,7 @@ func _own_ship_at(j: int) -> Dictionary:
 
 func _ship_to_sea(j: int) -> void:
 	var ship := _selected_ship()
-	var res: Dictionary = Navy.order_ship(state, state.player, ship, j, -1)
+	var res: Dictionary = state.navy_order_ship(state.player, ship, j, -1)
 	hud.show_event(res["msg"])
 	if res["ok"]:
 		sfx.play("click")
@@ -385,7 +386,7 @@ func _ship_to_land(i: int) -> void:
 	if ship.is_empty() or cell < 0:
 		hud.show_event("Сюда не причалить")
 		return
-	var res: Dictionary = Navy.order_ship(state, state.player, ship, cell, i)
+	var res: Dictionary = state.navy_order_ship(state.player, ship, cell, i)
 	hud.show_event(res["msg"])
 	if res["ok"]:
 		sfx.play("click")
@@ -769,7 +770,7 @@ func _update_actions(t: int) -> void:
 		list.append({"id": "recruit", "text": l2, "enabled": r2 == ""})
 	if world.tile_city[t] != 0 and world.tile_sea[t] >= 0:
 		if world.tile_port[t] == 0:
-			var rp := Navy.port_block_reason(state, cid, t)
+			var rp := state.navy_port_block_reason(cid, t)
 			var lp := "Построить порт (%s)" % GameState.fmt(Navy.PORT_COST)
 			if rp == "Не хватает денег":
 				lp += " — нет денег"
@@ -806,7 +807,7 @@ func _show_sea_info(j: int) -> void:
 		if int(sh["type"]) == 1:
 			lines.append("Боевой корабль. Нажмите на море — плыть")
 			var acts: Array = []
-			for tg in Navy.bombard_targets(state, state.player, sh):
+			for tg in state.navy_bombard_targets(state.player, sh):
 				acts.append({"id": "bomb_%d" % int(tg), "text": "Обстрелять вражескую дивизию", "enabled": true})
 			hud.set_actions(acts)
 		else:

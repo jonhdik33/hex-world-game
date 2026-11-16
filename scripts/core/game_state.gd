@@ -1111,6 +1111,404 @@ func format_date() -> String:
 	return "Год %d · день %d" % [year(), day_of_year()]
 
 
+# ---------- флот: порты, корабли, десант, обстрел (переехало из navy.gd) ----------
+const PORT_COST := 3000.0
+const PORT_DAYS := 8
+const TRANSPORT_COST := 2500.0
+const SHIP_UPKEEP := 40.0        # содержание транспорта в день
+const WARSHIP_COST := 4500.0
+const WARSHIP_UPKEEP := 70.0
+const BOMB_DPS := 7.0            # урон боевого корабля по дивизии в секунду
+const BOMB_SECONDS := 6.0        # длительность обстрела
+const T_CARGO := 0
+const T_WAR := 1
+const MAX_SHIPS := 6             # на страну
+const SHIP_STEP_SECONDS := 4.0   # переход в соседнюю морскую ячейку (при x1)
+
+# ---------- порты ----------
+
+func navy_port_block_reason(cid: int, t: int) -> String:
+	var w = world
+	if t < 0 or w.land[t] == 0 or w.tile_owner[t] != cid:
+		return "Не ваша территория"
+	if w.tile_city[t] == 0:
+		return "Порт строится только в городе"
+	if w.tile_port[t] == 1:
+		return "Порт уже есть"
+	if w.tile_sea[t] < 0:
+		return "Нет выхода к морю"
+	if is_building(t):
+		return "Здесь уже идёт стройка"
+	if float(money[cid]) < PORT_COST:
+		return "Не хватает денег"
+	return ""
+
+
+func navy_start_port(cid: int, t: int) -> bool:
+	if navy_port_block_reason(cid, t) != "":
+		return false
+	money[cid] = float(money[cid]) - PORT_COST
+	build_queue.append({"cid": cid, "tile": t, "days_left": PORT_DAYS, "new_city": false, "kind": "port"})
+	return true
+
+
+# ---------- корабли ----------
+
+func navy_cost_of(t: int) -> float:
+	if t == T_WAR:
+		return WARSHIP_COST
+	return TRANSPORT_COST
+
+
+func navy_upkeep_of(t: int) -> float:
+	if t == T_WAR:
+		return WARSHIP_UPKEEP
+	return SHIP_UPKEEP
+
+
+func navy_type_name(t: int) -> String:
+	if t == T_WAR:
+		return "Боевой"
+	return "Десантный"
+
+
+## Суммарное содержание флота страны в день.
+func navy_upkeep(cid: int) -> float:
+	var sum := 0.0
+	for s in ships:
+		var d: Dictionary = s
+		if int(d["owner"]) == cid:
+			sum += navy_upkeep_of(int(d["type"]))
+	return sum
+
+
+func navy_count_of(cid: int) -> int:
+	var n := 0
+	for s in ships:
+		var d: Dictionary = s
+		if int(d["owner"]) == cid:
+			n += 1
+	return n
+
+
+func navy_ship_by_id(id: int) -> Dictionary:
+	for s in ships:
+		var d: Dictionary = s
+		if int(d["id"]) == id:
+			return d
+	return {}
+
+
+func navy_new_ship(cid: int, cell: int, ship_type: int = 0) -> Dictionary:
+	var sh := {"id": _next_ship_id, "owner": cid, "cell": cell, "from_cell": cell, "path": [], "p": 0.0,
+		"state": 0, "cargo": {}, "land_tile": -1, "type": ship_type, "bomb": -1, "bomb_t": 0.0}
+	_next_ship_id += 1
+	ships.append(sh)
+	return sh
+
+
+func navy_ship_block_reason(cid: int, t: int, ship_type: int) -> String:
+	var w = world
+	if t < 0 or w.tile_owner[t] != cid or w.tile_port[t] == 0:
+		return "Нужен порт"
+	if navy_count_of(cid) >= MAX_SHIPS:
+		return "Максимум кораблей (%d)" % MAX_SHIPS
+	if float(money[cid]) < navy_cost_of(ship_type):
+		return "Не хватает денег"
+	return ""
+
+
+func navy_build_ship(cid: int, t: int, ship_type: int) -> bool:
+	if navy_ship_block_reason(cid, t, ship_type) != "":
+		return false
+	money[cid] = float(money[cid]) - navy_cost_of(ship_type)
+	navy_new_ship(cid, world.tile_sea[t], ship_type)
+	return true
+
+
+## Корабли страны, стоящие в порту плитки t.
+func navy_ships_at_port(cid: int, t: int) -> Array:
+	var out: Array = []
+	var w = world
+	if t < 0 or w.tile_port[t] == 0:
+		return out
+	for s in ships:
+		var d: Dictionary = s
+		if int(d["owner"]) == cid and int(d["cell"]) == w.tile_sea[t] and int(d["state"]) == 0:
+			out.append(d)
+	return out
+
+
+## Дивизии, которые можно погрузить в порту t: на самой плитке и на соседних своих плитках.
+func navy_loadable_tiles(cid: int, t: int) -> Array:
+	var w = world
+	var out: Array = []
+	var cand: Array = [t]
+	for k in 6:
+		var n: int = w.neighbor(t, k)
+		if n >= 0 and w.land[n] == 1 and w.tile_owner[n] == cid:
+			cand.append(n)
+	for c in cand:
+		var ci: int = c
+		var u: Dictionary = unit_at(ci)
+		if not u.is_empty() and int(u["owner"]) == cid and int(u["state"]) == 0 and int(u["recover"]) <= 0:
+			out.append(ci)
+	return out
+
+
+## Погрузить дивизию с плитки src на грузовой корабль в порту.
+func navy_load_unit(cid: int, src: int, ship: Dictionary) -> bool:
+	if ship.is_empty() or int(ship["type"]) != T_CARGO or not Dictionary(ship["cargo"]).is_empty():
+		return false
+	var u: Dictionary = unit_at(src)
+	if u.is_empty() or int(u["owner"]) != cid:
+		return false
+	if int(u["state"]) != 0 or int(u["recover"]) > 0:
+		return false
+	squads.erase(u)
+	unit_on.erase(src)
+	tile_army[src] = 0
+	u["tile"] = -1
+	ship["cargo"] = u
+	_rebuild()
+	return true
+
+
+## Выгрузить дивизию в порту на плитку порта или на свободную соседнюю свою плитку.
+func navy_unload_unit(cid: int, ship: Dictionary) -> bool:
+	if ship.is_empty() or Dictionary(ship["cargo"]).is_empty() or int(ship["state"]) != 0:
+		return false
+	var w = world
+	for i in w.tile_total():
+		if w.land[i] == 1 and w.tile_owner[i] == cid and w.tile_port[i] == 1 and w.tile_sea[i] == int(ship["cell"]):
+			var spots: Array = [i]
+			for k in 6:
+				spots.append(w.neighbor(i, k))
+			for sp in spots:
+				var t: int = sp
+				if t >= 0 and w.land[t] == 1 and w.tile_owner[t] == cid and not unit_on.has(t):
+					navy_land(ship, t)
+					return Dictionary(ship["cargo"]).is_empty()
+	return false
+
+
+## Обстрел: боевой корабль бьёт вражескую дивизию на береговой плитке своей ячейки.
+func navy_bombard_reason(cid: int, ship: Dictionary, t: int) -> String:
+	if ship.is_empty() or int(ship["owner"]) != cid or int(ship["type"]) != T_WAR:
+		return "Обстрел только боевым кораблём"
+	if int(ship["state"]) != 0:
+		return "Корабль в пути"
+	var w = world
+	if t < 0 or w.land[t] == 0 or w.tile_sea[t] != int(ship["cell"]):
+		return "Цель должна быть на берегу рядом с кораблём"
+	var u: Dictionary = unit_at(t)
+	if u.is_empty() or not is_at_war(cid, int(u["owner"])):
+		return "Там нет вражеской дивизии"
+	return ""
+
+
+func navy_bombard(cid: int, ship: Dictionary, t: int) -> bool:
+	if navy_bombard_reason(cid, ship, t) != "":
+		return false
+	ship["bomb"] = t
+	ship["bomb_t"] = BOMB_SECONDS
+	return true
+
+
+## Береговые плитки с вражескими дивизиями, которые корабль может обстрелять.
+func navy_bombard_targets(cid: int, ship: Dictionary) -> Array:
+	var out: Array = []
+	if int(ship["type"]) != T_WAR or int(ship["state"]) != 0:
+		return out
+	var w = world
+	for i in w.tile_total():
+		if w.land[i] == 1 and w.tile_sea[i] == int(ship["cell"]) and navy_bombard_reason(cid, ship, i) == "":
+			out.append(i)
+	return out
+
+
+## Кратчайший морской путь между ячейками (без стартовой); пусто = пути нет.
+func navy_sea_path(from_cell: int, to_cell: int) -> Array:
+	var w = world
+	if from_cell == to_cell or from_cell < 0 or to_cell < 0 or w.sea_navigable[to_cell] == 0:
+		return []
+	var g = w.sea_grid
+	var prev := {}
+	prev[from_cell] = -1
+	var queue: Array = [from_cell]
+	var qi := 0
+	while qi < queue.size():
+		var cur: int = queue[qi]
+		qi += 1
+		if cur == to_cell:
+			break
+		for k in 6:
+			var nb: int = g.neighbor(cur, k)
+			if nb < 0 or prev.has(nb) or w.sea_navigable[nb] == 0:
+				continue
+			prev[nb] = cur
+			queue.append(nb)
+	if not prev.has(to_cell):
+		return []
+	var path: Array = []
+	var c := to_cell
+	while c != from_cell:
+		path.push_front(c)
+		c = int(prev[c])
+	return path
+
+
+## Приказ кораблю: плыть в ячейку dest_cell; land_tile >= 0 — после прибытия высадить дивизию на эту плитку.
+func navy_order_ship(cid: int, ship: Dictionary, dest_cell: int, land_tile: int) -> Dictionary:
+	if ship.is_empty() or int(ship["owner"]) != cid:
+		return {"ok": false, "msg": "Это не ваш корабль"}
+	var w = world
+	ship["bomb"] = -1
+	ship["bomb_t"] = 0.0
+	if land_tile >= 0:
+		var o: int = w.tile_owner[land_tile]
+		if o != cid and not is_at_war(cid, o):
+			return {"ok": false, "msg": "Нужна война, чтобы высадиться на чужую землю"}
+		if Dictionary(ship["cargo"]).is_empty():
+			land_tile = -1
+		elif unit_on.has(land_tile):
+			return {"ok": false, "msg": "На этой плитке уже стоят войска"}
+	if int(ship["cell"]) == dest_cell:
+		if land_tile >= 0:
+			ship["land_tile"] = land_tile
+			ship["state"] = 1
+			ship["path"] = []
+			return {"ok": true, "msg": "Высадка"}
+		return {"ok": false, "msg": "Корабль уже здесь"}
+	if int(ship["state"]) == 1 and float(ship["p"]) > 0.0:
+		return {"ok": false, "msg": "Корабль в пути, дождитесь следующей ячейки"}
+	var path := navy_sea_path(int(ship["cell"]), dest_cell)
+	if path.is_empty():
+		return {"ok": false, "msg": "Морского пути нет"}
+	ship["path"] = path
+	ship["state"] = 1
+	ship["p"] = 0.0
+	ship["from_cell"] = ship["cell"]
+	ship["land_tile"] = land_tile
+	return {"ok": true, "msg": "Корабль вышел в море, ячеек: %d" % path.size()}
+
+
+func navy_advance(dt: float) -> void:
+	for s in ships:
+		var sh: Dictionary = s
+		if int(sh["bomb"]) >= 0:
+			navy_bomb_step(sh, dt)
+		if int(sh["state"]) != 1:
+			continue
+		var path: Array = sh["path"]
+		if path.is_empty():
+			navy_arrive(sh)
+			continue
+		sh["p"] = float(sh["p"]) + dt / SHIP_STEP_SECONDS
+		if float(sh["p"]) >= 1.0:
+			sh["cell"] = path[0]
+			sh["from_cell"] = path[0]
+			path.pop_front()
+			sh["path"] = path
+			sh["p"] = 0.0
+			if path.is_empty():
+				navy_arrive(sh)
+
+
+func navy_bomb_step(sh: Dictionary, dt: float) -> void:
+	var t: int = sh["bomb"]
+	var u: Dictionary = unit_at(t)
+	sh["bomb_t"] = float(sh["bomb_t"]) - dt
+	if u.is_empty() or not is_at_war(int(sh["owner"]), int(u["owner"])) or float(sh["bomb_t"]) <= 0.0 or int(sh["state"]) != 0:
+		sh["bomb"] = -1
+		sh["bomb_t"] = 0.0
+		return
+	u["hp"] = float(u["hp"]) - BOMB_DPS * dt
+	if float(u["hp"]) <= 0.0 and not bool(u["dead"]):
+		_remove_unit(u)
+		_rebuild()
+		sh["bomb"] = -1
+		if int(sh["owner"]) == player or int(u["owner"]) == player:
+			events.append("Корабль уничтожил дивизию")
+			sounds.append("capture")
+
+
+func navy_arrive(sh: Dictionary) -> void:
+	sh["state"] = 0
+	var t: int = sh["land_tile"]
+	sh["land_tile"] = -1
+	if t >= 0 and not Dictionary(sh["cargo"]).is_empty():
+		navy_land(sh, t)
+
+
+func navy_land(sh: Dictionary, t: int) -> void:
+	var w = world
+	var u: Dictionary = sh["cargo"]
+	var cid: int = sh["owner"]
+	var o: int = w.tile_owner[t]
+	var ok := not unit_on.has(t) and (o == cid or is_at_war(cid, o))
+	if not ok:
+		if cid == player:
+			events.append("Высадка не удалась: плитка занята")
+		return
+	sh["cargo"] = {}
+	u["tile"] = t
+	u["from"] = t
+	u["state"] = 0
+	u["path"] = []
+	u["p"] = 0.0
+	u["crossed"] = false
+	u["recover"] = 0
+	squads.append(u)
+	unit_on[t] = u
+	tile_army[t] = 1
+	if o != cid:
+		_capture(cid, o, t)
+	_rebuild()
+	if cid == player:
+		events.append("Высадка завершена")
+		sounds.append("capture")
+
+
+## Страна присоединена: её корабли (и груз) исчезают.
+func navy_remove_country(cid: int) -> void:
+	var keep: Array = []
+	for s in ships:
+		var d: Dictionary = s
+		if int(d["owner"]) != cid:
+			keep.append(d)
+	ships = keep
+
+
+## Острова: у страны, живущей на отдельном острове, с начала есть один транспорт в порту.
+func navy_give_start_ships() -> void:
+	var w = world
+	var owners_by_mass := {}
+	for i in w.tile_total():
+		if w.land[i] == 0 or w.tile_owner[i] < 0:
+			continue
+		var m: int = w.landmass[i]
+		if not owners_by_mass.has(m):
+			owners_by_mass[m] = {}
+		var d: Dictionary = owners_by_mass[m]
+		d[int(w.tile_owner[i])] = true
+	for cid in w.countries.size():
+		var island := true
+		var has_tile := false
+		for m in owners_by_mass.keys():
+			var d2: Dictionary = owners_by_mass[m]
+			if d2.has(cid):
+				has_tile = true
+				if d2.size() > 1:
+					island = false
+		if not island or not has_tile:
+			continue
+		for i in w.tile_total():
+			if w.tile_owner[i] == cid and w.tile_port[i] == 1:
+				navy_new_ship(cid, w.tile_sea[i])
+				break
+
+
 # ---------- форматирование чисел ----------
 
 ## Короткая запись: 1500 -> 1.5k, 2300000 -> 2.30M, отрицательные со знаком минус.
