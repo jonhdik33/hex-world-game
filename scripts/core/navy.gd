@@ -7,6 +7,9 @@ extends RefCounted
 const PORT_COST := 3000.0
 const PORT_DAYS := 8
 const TRANSPORT_COST := 2500.0
+const BATTLESHIP_COST := 4200.0
+const TYPE_CARGO := "cargo"
+const TYPE_BATTLE := "battle"
 const SHIP_UPKEEP := 40.0        # содержание транспорта в день
 const MAX_SHIPS := 6             # на страну
 const SHIP_STEP_SECONDS := 4.0   # переход в соседнюю морскую ячейку (при x1)
@@ -58,50 +61,51 @@ static func ship_by_id(st, id: int) -> Dictionary:
 	return {}
 
 
-static func _new_ship(st, cid: int, cell: int) -> Dictionary:
+static func _new_ship(st, cid: int, cell: int, ship_type: String = TYPE_CARGO) -> Dictionary:
 	var sh := {"id": st._next_ship_id, "owner": cid, "cell": cell, "from_cell": cell, "path": [], "p": 0.0,
-		"state": 0, "cargo": {}, "land_tile": -1}
+		"state": 0, "cargo": {}, "land_tile": -1, "type": ship_type, "attack_cd": 0.0}
 	st._next_ship_id += 1
 	st.ships.append(sh)
 	return sh
 
 
-static func ship_block_reason(st, cid: int, t: int) -> String:
+static func ship_block_reason(st, cid: int, t: int, ship_type: String = TYPE_CARGO) -> String:
 	var w = st.world
 	if t < 0 or w.tile_owner[t] != cid or w.tile_port[t] == 0:
 		return "Нужен порт"
 	if count_of(st, cid) >= MAX_SHIPS:
 		return "Максимум кораблей (%d)" % MAX_SHIPS
-	if float(st.money[cid]) < TRANSPORT_COST:
+	var price: float = BATTLESHIP_COST if ship_type == TYPE_BATTLE else TRANSPORT_COST
+	if float(st.money[cid]) < price:
 		return "Не хватает денег"
 	return ""
 
 
-static func build_ship(st, cid: int, t: int) -> bool:
-	if ship_block_reason(st, cid, t) != "":
+static func build_ship(st, cid: int, t: int, ship_type: String = TYPE_CARGO) -> bool:
+	if ship_block_reason(st, cid, t, ship_type) != "":
 		return false
-	st.money[cid] = float(st.money[cid]) - TRANSPORT_COST
-	_new_ship(st, cid, st.world.tile_sea[t])
+	var price: float = BATTLESHIP_COST if ship_type == TYPE_BATTLE else TRANSPORT_COST
+	st.money[cid] = float(st.money[cid]) - price
+	_new_ship(st, cid, st.world.tile_sea[t], ship_type)
 	return true
 
-
 ## Свободный (стоит, пустой) транспорт страны в порту плитки t.
-static func free_ship_at_port(st, cid: int, t: int) -> Dictionary:
+static func free_ship_at_port(st, cid: int, t: int, ship_type: String = "") -> Dictionary:
 	var w = st.world
 	if t < 0 or w.tile_port[t] == 0:
 		return {}
 	for s in st.ships:
 		var d: Dictionary = s
-		if int(d["owner"]) == cid and int(d["cell"]) == w.tile_sea[t] and int(d["state"]) == 0 and Dictionary(d["cargo"]).is_empty():
+		if int(d["owner"]) == cid and int(d["cell"]) == w.tile_sea[t] and int(d["state"]) == 0 and Dictionary(d["cargo"]).is_empty() and (ship_type == "" or String(d.get("type", TYPE_CARGO)) == ship_type):
 			return d
 	return {}
 
 
 ## Погрузить дивизию с плитки t (порт) на свободный транспорт.
-static func load_unit(st, cid: int, t: int) -> bool:
-	var ship := free_ship_at_port(st, cid, t)
+static func load_unit(st, cid: int, t: int, ship_type: String = TYPE_CARGO) -> bool:
+	var ship := free_ship_at_port(st, cid, t, ship_type)
 	var u: Dictionary = st.unit_at(t)
-	if ship.is_empty() or u.is_empty() or int(u["owner"]) != cid:
+	if ship.is_empty() or String(ship.get("type", TYPE_CARGO)) != ship_type or u.is_empty() or int(u["owner"]) != cid:
 		return false
 	if int(u["state"]) != 0 or int(u["recover"]) > 0:
 		return false
@@ -112,6 +116,33 @@ static func load_unit(st, cid: int, t: int) -> bool:
 	ship["cargo"] = u
 	st._rebuild()
 	return true
+
+
+## Боевой корабль обстреливает вражескую дивизию на прибрежной плитке.
+static func attack_land(st, cid: int, ship: Dictionary, t: int) -> Dictionary:
+	if ship.is_empty() or String(ship.get("type", TYPE_CARGO)) != TYPE_BATTLE:
+		return {"ok": false, "msg": "Нужен боевой корабль"}
+	if int(ship["state"]) != 0:
+		return {"ok": false, "msg": "Корабль должен стоять"}
+	if t < 0 or st.world.tile_sea[t] != int(ship["cell"]):
+		return {"ok": false, "msg": "Цель вне дальности"}
+	var owner: int = st.world.tile_owner[t]
+	if owner < 0 or owner == cid or not st.is_at_war(cid, owner):
+		return {"ok": false, "msg": "Можно атаковать только врага"}
+	var target: Dictionary = st.unit_at(t)
+	if target.is_empty() or int(target["owner"]) != owner:
+		return {"ok": false, "msg": "На плитке нет вражеской дивизии"}
+	if float(ship.get("attack_cd", 0.0)) > 0.0:
+		return {"ok": false, "msg": "Орудия перезаряжаются"}
+	target["hp"] = float(target["hp"]) - 55.0
+	ship["attack_cd"] = 8.0
+	if float(target["hp"]) <= 0.0:
+		st._remove_unit(target)
+		st.events.append("Боевой корабль уничтожил вражескую дивизию")
+	else:
+		st.events.append("Боевой корабль нанёс дивизии 55% урона")
+	st.sounds.append("battle")
+	return {"ok": true, "msg": "Морской обстрел выполнен"}
 
 
 ## Кратчайший морской путь между ячейками (без стартовой); пусто = пути нет.
@@ -179,6 +210,7 @@ static func order_ship(st, cid: int, ship: Dictionary, dest_cell: int, land_tile
 static func advance(st, dt: float) -> void:
 	for s in st.ships:
 		var sh: Dictionary = s
+		sh["attack_cd"] = maxf(0.0, float(sh.get("attack_cd", 0.0)) - dt)
 		if int(sh["state"]) != 1:
 			continue
 		var path: Array = sh["path"]

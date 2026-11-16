@@ -7,6 +7,7 @@ signal confirm_pressed
 signal regen_pressed
 signal speed_selected(speed: int)
 signal action_pressed(id: String)
+signal fleet_action_pressed(id: String)
 signal production_changed(percent: int)
 signal research_pressed(branch: int)
 signal restart_pressed
@@ -19,7 +20,7 @@ signal volume_changed(value: float)
 const GameState = preload("res://scripts/core/game_state.gd")
 
 const FONT := 22
-const SPEED_NAMES: Array = ["Пауза", "x1", "x2", "x3"]
+const SPEED_NAMES: Array = ["x1", "x2", "x3"]
 const ACTION_SLOTS := 7
 const MENU_ICONS: Array = ["balance", "countries", "production", "science", "settings"]
 const MENU_NAMES: Array = ["Баланс", "Страны", "Производство", "Наука", "Настройки"]
@@ -62,6 +63,8 @@ var _continue_btn: Button
 var _sound_check: CheckButton
 var _volume_slider: HSlider
 var _pfx: Dictionary = {}   # подписи вместо иконок, если иконка не загрузилась
+var _fleet_panel: PanelContainer
+var _fleet_box: VBoxContainer
 
 
 func _init() -> void:
@@ -177,7 +180,7 @@ func _build() -> void:
 		b.toggle_mode = true
 		b.add_theme_font_size_override("font_size", FONT)
 		b.custom_minimum_size = Vector2(84, 52)
-		b.pressed.connect(_on_speed_pressed.bind(s))
+		b.pressed.connect(_on_speed_pressed.bind(s + 1))
 		_speed_box.add_child(b)
 		_speed_buttons.append(b)
 	_speed_box.visible = false
@@ -222,8 +225,21 @@ func _build() -> void:
 	rbox.add_child(again)
 	_result_panel.visible = false
 
+	# Отдельное окно управления флотом: покупка кораблей и погрузка дивизии.
+	_fleet_panel = _make_panel()
+	add_child(_fleet_panel)
+	_fleet_panel.anchor_left = 0.5
+	_fleet_panel.anchor_right = 0.5
+	_fleet_panel.anchor_top = 0.5
+	_fleet_panel.anchor_bottom = 0.5
+	_fleet_panel.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	_fleet_panel.grow_vertical = Control.GROW_DIRECTION_BOTH
+	_fleet_box = VBoxContainer.new()
+	_fleet_panel.add_child(_fleet_box)
+	_fleet_panel.visible = false
+
 	_blockers = [_top_bar, _hint_panel, _regen_btn, _info_panel, _pick_panel, _speed_box,
-		_menu_row, _result_panel, _continue_btn]
+		_menu_row, _result_panel, _continue_btn, _fleet_panel]
 	for p in _menu_panels:
 		_blockers.append(p)
 
@@ -480,6 +496,32 @@ func hide_result() -> void:
 
 
 ## Кнопки действий под информацией о плитке. Каждое: {"id": "...", "text": "...", "enabled": bool}.
+func show_fleet_menu(options: Array) -> void:
+	for child in _fleet_box.get_children():
+		child.queue_free()
+	var title := _plain_label("УПРАВЛЕНИЕ ФЛОТОМ", Color(1.0, 0.9, 0.5))
+	_fleet_box.add_child(title)
+	for option in options:
+		var d: Dictionary = option
+		var b := Button.new()
+		b.text = String(d["text"])
+		b.disabled = not bool(d["enabled"])
+		b.custom_minimum_size = Vector2(390, 48)
+		b.add_theme_font_size_override("font_size", FONT)
+		b.pressed.connect(_on_fleet_option_pressed.bind(String(d["id"])))
+		_fleet_box.add_child(b)
+	var close := Button.new()
+	close.text = "Закрыть"
+	close.pressed.connect(func(): _fleet_panel.visible = false)
+	_fleet_box.add_child(close)
+	_fleet_panel.visible = true
+
+
+func _on_fleet_option_pressed(id: String) -> void:
+	_fleet_panel.visible = false
+	fleet_action_pressed.emit(id)
+
+
 func set_actions(list: Array) -> void:
 	for n in ACTION_SLOTS:
 		var b: Button = _action_btns[n]
@@ -510,7 +552,7 @@ func _hide_event(tok: int) -> void:
 func set_speed_mark(speed: int) -> void:
 	for s in _speed_buttons.size():
 		var b: Button = _speed_buttons[s]
-		b.set_pressed_no_signal(s == speed)
+		b.set_pressed_no_signal(s + 1 == speed)
 
 
 ## Находится ли точка экрана над элементом интерфейса (тогда тап по карте игнорируем).

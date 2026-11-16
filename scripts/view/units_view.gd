@@ -164,7 +164,7 @@ func _draw() -> void:
 				var np: Vector2 = world.sea_anchor[int(c)]
 				draw_dashed_line(prev2, np, Color(1, 1, 1, 0.5), 2.0, 5.0)
 				prev2 = np
-		_boat(pos2, s, _owner_color(int(shd["owner"])), not Dictionary(shd["cargo"]).is_empty())
+		_boat(pos2, s, _owner_color(int(shd["owner"])), not Dictionary(shd["cargo"]).is_empty(), String(shd.get("type", "cargo")) == "battle")
 
 
 func _ship_pos(sh: Dictionary) -> Vector2:
@@ -176,7 +176,7 @@ func _ship_pos(sh: Dictionary) -> Vector2:
 	return a
 
 
-func _boat(c: Vector2, s: float, col: Color, loaded: bool) -> void:
+func _boat(c: Vector2, s: float, col: Color, loaded: bool, battle: bool = false) -> void:
 	var dark := Color(0.05, 0.05, 0.1, 0.95)
 	var hull := PackedVector2Array([c + Vector2(-0.8, 0.0) * s, c + Vector2(0.8, 0.0) * s,
 		c + Vector2(0.5, 0.45) * s, c + Vector2(-0.5, 0.45) * s])
@@ -188,6 +188,9 @@ func _boat(c: Vector2, s: float, col: Color, loaded: bool) -> void:
 	draw_colored_polygon(PackedVector2Array([c + Vector2(0.0, -0.8) * s, c + Vector2(0.55, -0.55) * s, c + Vector2(0.0, -0.3) * s]), col)
 	if loaded:
 		draw_circle(c + Vector2(-0.35, -0.1) * s, 0.16 * s, Color(0.4, 1.0, 0.5))
+	if battle:
+		draw_circle(c + Vector2(0.25, 0.12) * s, 0.18 * s, Color(0.25, 0.28, 0.35))
+		draw_line(c + Vector2(0.25, 0.12) * s, c + Vector2(0.72, -0.02) * s, dark, 0.12 * s)
 
 
 func _draw_clash(mid: Vector2, t: float, s: float) -> void:
