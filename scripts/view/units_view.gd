@@ -122,22 +122,13 @@ func _draw() -> void:
 		var pos := world.center_of(int(u["tile"])) + shift
 		var upath: Array = u["path"]
 		var walking := int(u["state"]) == GameState.ST_MOVE and not upath.is_empty() and float(u["p"]) > 0.0
-		var heading := Vector2.ZERO
 		if walking:
 			# солдат идёт плавно: стоит на острие стрелки, а на плитку «приходит» без скачка
 			var nxt := world.center_of(int(upath[0]))
 			var from_c := world.center_of(int(u["tile"]))
 			var pp := clampf(float(u["p"]), 0.0, 1.0)
 			pos = from_c.lerp(nxt, pp) + shift
-			heading = (nxt - from_c).normalized()
 			pos.y -= absf(sin(float(Time.get_ticks_msec()) / 110.0)) * s * 0.08   # шаг
-			# след за солдатом и наконечник впереди
-			var trail_a := from_c + shift
-			draw_line(trail_a, pos, Color(0.05, 0.05, 0.1, 0.55), s * 0.2)
-			draw_line(trail_a, pos, Color(_owner_color(o), 0.75), s * 0.12)
-			var side := Vector2(-heading.y, heading.x)
-			var hb := pos + heading * s * 0.45
-			draw_colored_polygon(PackedVector2Array([hb + heading * s * 0.38, hb + side * s * 0.22, hb - side * s * 0.22]), _owner_color(o))
 		# мягкая тень под солдатом
 		draw_colored_polygon(_ellipse(pos + Vector2(0, s * 0.5), s * 0.38, s * 0.12), Color(0, 0, 0, 0.28))
 		_soldier(pos, s * 0.9, _owner_color(o))

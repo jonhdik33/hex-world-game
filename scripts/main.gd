@@ -428,6 +428,17 @@ func _ship_tap(i: int, wt: int) -> bool:
 		else:
 			hud.show_event("Не удалось вернуться в гавань")
 		return true
+	# забрать дивизию с обычной береговой плитки: нужен пустой десантный корабль
+	if world.tile_owner[i] == pid and state.navy_pickup_reason(pid, i) == "":
+		for sh in ships:
+			var pd: Dictionary = sh
+			if int(pd["type"]) == 0 and Dictionary(pd["cargo"]).is_empty():
+				var rp: Dictionary = state.navy_order_ship(pid, pd, -1, -1, -1, i)
+				hud.show_event(rp["msg"])
+				if rp["ok"]:
+					sfx.play("click")
+					_deselect_ships()
+				return true
 	# высадка: нужен корабль с дивизией и свободная плитка (своя или страны, с которой война)
 	var carrier: Dictionary = {}
 	for sh in ships:

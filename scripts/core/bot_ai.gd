@@ -23,6 +23,7 @@ static func think(st, cid: int, aggr: float, active: bool) -> void:
 		return   # неактивные боты только развиваются
 	_war(st, cid, own, aggr)
 	_move(st, cid, own)
+	_navy(st, cid, own)
 
 
 static func _economy(st, cid: int, own: Array) -> void:
@@ -224,5 +225,100 @@ static func _nearest_enemy_capital(st, from_tile: int, enemies: Dictionary) -> i
 		var d: float = here.distance_squared_to(st.world.center_of(cap))
 		if best < 0 or d < best_d:
 			best = cap
+			best_d = d
+	return best
+
+
+# ---------- флот (только через методы GameState) ----------
+
+static func _navy(st, cid: int, own: Array) -> void:
+	var world = st.world
+	var enemies := {}
+	for o in world.countries.size():
+		if o != cid and st.is_at_war(cid, o) and int(world.countries[o]["tiles"]) > 0:
+			enemies[o] = true
+	if enemies.is_empty():
+		return
+	if int(st.bot_style[cid]) == 2:
+		return
+	# свои порты
+	var ports: Array = []
+	for t in own:
+		var ti: int = t
+		if world.tile_port[ti] == 1 and world.tile_sea[ti] >= 0:
+			ports.append(ti)
+	var money: float = st.money[cid]
+	# нет порта: строим в прибрежном городе
+	if ports.is_empty():
+		if money > st.PORT_COST + 6000.0 + st.navy_cost_of(0):
+			for t2 in own:
+				var t2i: int = t2
+				if world.tile_city[t2i] != 0 and st.navy_port_block_reason(cid, t2i) == "":
+					st.navy_start_port(cid, t2i)
+					break
+		return
+	# покупка одного десантного корабля
+	var landing := 0
+	for s in st.ships:
+		var sd: Dictionary = s
+		if int(sd["owner"]) == cid and int(sd["type"]) == 0:
+			landing += 1
+	if landing < 2 and int(st.army[cid]) >= 3 and money > st.navy_cost_of(0) + 4000.0 and st.daily_net(cid) > st.navy_upkeep_of(0):
+		var pp: int = ports[st.rng.randi_range(0, ports.size() - 1)]
+		st.navy_build_ship(cid, pp, 0)
+	var orders := 0
+	for s2 in st.ships.duplicate():
+		if orders >= 2:
+			break
+		var sh: Dictionary = s2
+		if int(sh["owner"]) != cid or int(sh["state"]) != 0 or int(sh["type"]) != 0:
+			continue
+		if st.rng.randf() < st.bot_miss_chance():
+			continue
+		var cargo: Dictionary = sh["cargo"]
+		if cargo.is_empty():
+			var dk: int = sh["dock"]
+			if dk < 0:
+				# пустой корабль в море: возвращается в ближайший порт
+				var pt: int = _nearest_tile(st, int(sh["cell"]), ports)
+				if pt >= 0:
+					st.navy_order_ship(cid, sh, -1, -1, pt)
+				continue
+			if int(st.army[cid]) < 3:
+				continue
+			var src: Array = st.navy_loadable_tiles(cid, dk)
+			if src.is_empty():
+				continue
+			st.navy_load_unit(cid, int(src[0]), sh)
+			cargo = sh["cargo"]
+			if cargo.is_empty():
+				continue
+		# есть дивизия: выбираем вражеский берег
+		var cands: Array = []
+		for i in world.tile_total():
+			if world.land[i] == 1 and enemies.has(int(world.tile_owner[i])) and world.tile_sea[i] >= 0 and not st.unit_on.has(i):
+				cands.append(i)
+		var here: Vector2 = world.center_of(int(sh["dock"]) if int(sh["dock"]) >= 0 else int(sh["cell"]))
+		cands.sort_custom(func(a, b): return here.distance_squared_to(world.center_of(int(a))) < here.distance_squared_to(world.center_of(int(b))))
+		var tries := 0
+		for c in cands:
+			if tries >= 4:
+				break
+			tries += 1
+			var res: Dictionary = st.navy_order_ship(cid, sh, -1, int(c))
+			if res["ok"]:
+				orders += 1
+				break
+
+
+static func _nearest_tile(st, cell: int, tiles: Array) -> int:
+	var best := -1
+	var best_d := 0.0
+	var here: Vector2 = st.world.center_of(cell)
+	for t in tiles:
+		var ti: int = t
+		var d: float = here.distance_squared_to(st.world.center_of(ti))
+		if best < 0 or d < best_d:
+			best = ti
 			best_d = d
 	return best

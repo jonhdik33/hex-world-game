@@ -1173,7 +1173,7 @@ func navy_ship_by_id(id: int) -> Dictionary:
 
 func navy_new_ship(cid: int, cell: int, ship_type: int = 0, dock: int = -1) -> Dictionary:
 	var sh := {"id": _next_ship_id, "owner": cid, "cell": cell, "from_cell": cell, "path": [], "p": 0.0,
-		"state": 0, "cargo": {}, "land_tile": -1, "type": ship_type, "bomb": -1, "bomb_t": 0.0,
+		"state": 0, "cargo": {}, "land_tile": -1, "load_tile": -1, "type": ship_type, "bomb": -1, "bomb_t": 0.0,
 		"dock": dock, "dock_to": -1}
 	_next_ship_id += 1
 	ships.append(sh)
@@ -1242,6 +1242,18 @@ func navy_loadable_tiles(cid: int, t: int) -> Array:
 		if not u.is_empty() and int(u["owner"]) == cid and int(u["state"]) == 0 and int(u["recover"]) <= 0:
 			out.append(ci)
 	return out
+
+
+## Почему нельзя забрать дивизию с берега t ("" — можно).
+func navy_pickup_reason(cid: int, t: int) -> String:
+	if t < 0 or world.land[t] == 0 or world.tile_owner[t] != cid:
+		return "Нужна своя береговая плитка"
+	if world.tile_sea[t] < 0:
+		return "Плитка не на берегу"
+	var u: Dictionary = unit_at(t)
+	if u.is_empty() or int(u["owner"]) != cid or int(u["state"]) != 0 or int(u["recover"]) > 0:
+		return "На плитке нет готовой дивизии"
+	return ""
 
 
 ## Погрузить дивизию с плитки src на грузовой корабль в порту.
@@ -1382,7 +1394,7 @@ func navy_path_to_shore(from_cell: int, land_tile: int) -> Array:
 
 ## Приказ кораблю: плыть на водную плитку dest_cell. land_tile >= 0 — подойти к берегу и высадить дивизию;
 ## dock_to >= 0 — вернуться в гавань порта. Приказ посреди шага: корабль сначала дойдёт до следующей плитки.
-func navy_order_ship(cid: int, ship: Dictionary, dest_cell: int, land_tile: int, dock_to: int = -1) -> Dictionary:
+func navy_order_ship(cid: int, ship: Dictionary, dest_cell: int, land_tile: int, dock_to: int = -1, load_tile: int = -1) -> Dictionary:
 	if ship.is_empty() or int(ship["owner"]) != cid:
 		return {"ok": false, "msg": "Это не ваш корабль"}
 	var w = world
@@ -1395,7 +1407,16 @@ func navy_order_ship(cid: int, ship: Dictionary, dest_cell: int, land_tile: int,
 		start = int(cur_path[0])
 		head = [start]
 	var route: Array = []
-	if land_tile >= 0:
+	if load_tile >= 0:
+		if int(ship["type"]) != T_CARGO or not Dictionary(ship["cargo"]).is_empty():
+			return {"ok": false, "msg": "Нужен пустой десантный корабль"}
+		if navy_pickup_reason(cid, load_tile) != "":
+			return {"ok": false, "msg": navy_pickup_reason(cid, load_tile)}
+		if not navy_adjacent(start, load_tile):
+			route = navy_path_to_shore(start, load_tile)
+			if route.is_empty():
+				return {"ok": false, "msg": "К этому берегу не подойти"}
+	elif land_tile >= 0:
 		var o: int = w.tile_owner[land_tile]
 		if o != cid and not is_at_war(cid, o):
 			return {"ok": false, "msg": "Нужна война, чтобы высадиться на чужую землю"}
@@ -1427,7 +1448,10 @@ func navy_order_ship(cid: int, ship: Dictionary, dest_cell: int, land_tile: int,
 		ship["p"] = 0.0
 		ship["from_cell"] = ship["cell"]
 	ship["land_tile"] = land_tile
+	ship["load_tile"] = load_tile
 	ship["dock_to"] = dock_to
+	if load_tile >= 0:
+		return {"ok": true, "msg": "Корабль идёт за дивизией"}
 	if land_tile >= 0:
 		return {"ok": true, "msg": "Корабль идёт к берегу"}
 	return {"ok": true, "msg": "Корабль вышел в море"}
@@ -1481,6 +1505,16 @@ func navy_arrive(sh: Dictionary) -> void:
 	sh["dock_to"] = -1
 	if dk >= 0:
 		sh["dock"] = dk
+	var lt: int = sh.get("load_tile", -1)
+	sh["load_tile"] = -1
+	if lt >= 0:
+		var cid: int = sh["owner"]
+		if navy_adjacent(int(sh["cell"]), lt) and navy_load_unit(cid, lt, sh):
+			if cid == player:
+				events.append("Дивизия погружена")
+				sounds.append("capture")
+		elif cid == player:
+			events.append("Погрузка не удалась")
 	if t >= 0 and not Dictionary(sh["cargo"]).is_empty():
 		navy_land(sh, t)
 

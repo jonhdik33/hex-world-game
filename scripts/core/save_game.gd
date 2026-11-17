@@ -168,7 +168,7 @@ static func load_into(world, state) -> bool:
 			cargo = _unit_from(cg)
 		ships.append({"id": int(sd["id"]), "owner": int(sd["owner"]), "cell": int(sd["cell"]),
 			"from_cell": int(sd["from_cell"]), "path": path, "p": float(sd["p"]), "state": int(sd["state"]),
-			"cargo": cargo, "land_tile": int(sd["land_tile"]), "type": int(sd.get("type", 0)),
+			"cargo": cargo, "land_tile": int(sd["land_tile"]), "load_tile": int(sd.get("load_tile", -1)), "type": int(sd.get("type", 0)),
 			"bomb": int(sd.get("bomb", -1)), "bomb_t": float(sd.get("bomb_t", 0.0)),
 			"dock": int(sd.get("dock", -1)), "dock_to": int(sd.get("dock_to", -1))})
 	state.ships = ships
