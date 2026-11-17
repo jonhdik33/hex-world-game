@@ -148,6 +148,19 @@ func select_land(i: int) -> void:
 	_show_highlight(pts, c, 3.0)
 
 
+## Подсветка одной водной плитки (там стоит корабль).
+func select_water(i: int) -> void:
+	if world == null or i < 0:
+		clear_selection()
+		return
+	var pts := PackedVector2Array()
+	for k in 6:
+		pts.append(_off[k])
+	if _sea_outline != null:
+		_sea_outline.visible = false
+	_show_highlight(pts, world.center_of(i), 3.0)
+
+
 ## Выделяет только видимую часть морской ячейки: её края, не закрытые сушей,
 ## и береговую линию суши внутри ячейки.
 func select_sea(j: int) -> void:

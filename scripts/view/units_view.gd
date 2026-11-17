@@ -9,6 +9,7 @@ const GameState = preload("res://scripts/core/game_state.gd")
 var world: World
 var state: GameState
 var player_country: int = -1
+var selected_ships: Array = []   # номера выбранных кораблей игрока
 
 
 func setup(w: World, s: GameState) -> void:
@@ -174,31 +175,53 @@ func _draw() -> void:
 	# корабли: лодка с флажком цвета страны; в трюме дивизия — точка
 	for sh in state.ships:
 		var shd: Dictionary = sh
+		if int(shd["dock"]) >= 0:
+			continue   # корабль в гавани не виден на карте
 		var pos2 := _ship_pos(shd)
-		pos2.y += sin(float(Time.get_ticks_msec()) / 450.0 + float(int(shd["id"]))) * s * 0.06   # качка
+		pos2.y += sin(float(Time.get_ticks_msec()) / 450.0 + float(int(shd["id"]))) * s * 0.05   # качка
 		if int(shd["state"]) == 0:
-			pos2 += Vector2(float(int(shd["id"]) % 3 - 1) * s * 1.6, 0.0)   # корабли в одной ячейке не слипаются
+			pos2 += Vector2(float(int(shd["id"]) % 3 - 1) * s * 0.28, float(int(shd["id"]) % 2) * s * 0.18)   # корабли на одной плитке не слипаются
 		var pth: Array = shd["path"]
 		if int(shd["state"]) == 1 and int(shd["owner"]) == player_country and pth.size() >= 1:
 			var prev2 := pos2
 			for c in pth:
-				var np: Vector2 = world.sea_anchor[int(c)]
-				draw_dashed_line(prev2, np, Color(1, 1, 1, 0.5), 2.0, 5.0)
+				var np: Vector2 = world.center_of(int(c))
+				draw_dashed_line(prev2, np, Color(1, 1, 1, 0.5), 2.0, 4.0)
 				prev2 = np
-		_boat(pos2, s, _owner_color(int(shd["owner"])), not Dictionary(shd["cargo"]).is_empty(), int(shd["type"]) == 1)
+		_boat(pos2, s * 0.62, _owner_color(int(shd["owner"])), not Dictionary(shd["cargo"]).is_empty(), int(shd["type"]) == 1)
+		if player_country >= 0 and int(shd["owner"]) == player_country and int(shd["id"]) in selected_ships:
+			draw_arc(world.center_of(int(shd["cell"])), s * 0.95, 0.0, TAU, 20, Color(1, 1, 1, 0.9), 2.0)
 		if int(shd["bomb"]) >= 0:
 			var tp := world.center_of(int(shd["bomb"]))
 			var ph := fmod(float(Time.get_ticks_msec()) / 150.0, 1.0)
 			draw_line(pos2, tp, Color(1.0, 0.6, 0.2, 0.8), 2.0)
 			draw_circle(pos2.lerp(tp, ph), s * 0.18, Color(1.0, 0.9, 0.4))
 			_draw_clash(tp, float(Time.get_ticks_msec()) / 1000.0, s)
+	_draw_docked()
+
+
+## Значок «в гавани стоят корабли: N» рядом с портом игрока.
+func _draw_docked() -> void:
+	var counts := {}
+	for sh in state.ships:
+		var d: Dictionary = sh
+		var dk: int = d["dock"]
+		if dk >= 0 and int(d["owner"]) == player_country:
+			counts[dk] = int(counts.get(dk, 0)) + 1
+	var font := ThemeDB.fallback_font
+	for k in counts.keys():
+		var t: int = k
+		var pc := world.center_of(t) + Vector2(world.hex_r * 0.55, world.hex_r * 0.95)
+		draw_circle(pc, world.hex_r * 0.34, Color(0.05, 0.05, 0.1, 0.95))
+		draw_circle(pc, world.hex_r * 0.27, Color(0.35, 0.75, 1.0))
+		draw_string(font, pc + Vector2(-world.hex_r * 0.12, world.hex_r * 0.14), str(int(counts[k])), HORIZONTAL_ALIGNMENT_LEFT, -1, int(world.hex_r * 0.5), Color(0.02, 0.05, 0.15))
 
 
 func _ship_pos(sh: Dictionary) -> Vector2:
-	var a: Vector2 = world.sea_anchor[int(sh["cell"])]
+	var a: Vector2 = world.center_of(int(sh["cell"]))
 	var pth: Array = sh["path"]
 	if int(sh["state"]) == 1 and not pth.is_empty():
-		var b: Vector2 = world.sea_anchor[int(pth[0])]
+		var b: Vector2 = world.center_of(int(pth[0]))
 		return a.lerp(b, clampf(float(sh["p"]), 0.0, 1.0))
 	return a
 

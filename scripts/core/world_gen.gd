@@ -70,65 +70,67 @@ static func _prune_slivers(world: World, weak: Array) -> void:
 		world.land[int(t)] = 0
 
 
-## Точка воды в каждой проходимой ячейке (для кораблей) и ближайшая ячейка для береговых плиток.
+## Корабли плавают по самим водным плиткам (тем же шестиугольникам, что и суша):
+## переход идёт из центра в центр соседней водной плитки, так что пересечь сушу невозможно.
+## Для береговой плитки tile_sea = соседняя водная плитка океана (порт и высадка).
 static func _build_sea_access(world: World) -> void:
 	var g := world.sea_grid
-	var n := g.total()
-	world.sea_anchor.resize(n)
+	world.sea_anchor.resize(g.total())
+	for j in g.total():
+		world.sea_anchor[j] = g.center_of(j)
+	var n := world.tile_total()
 	var b := world.bounds()
-	for j in n:
-		var c := g.center_of(j)
-		world.sea_anchor[j] = c
-		if world.sea_navigable[j] == 0:
+	world.water_nav.resize(n)
+	world.water_nav.fill(0)
+	for i in n:
+		if world.land[i] == 0 and b.has_point(world.center_of(i)):
+			world.water_nav[i] = 1
+	# связные куски воды; океан = самый большой
+	var comp := PackedInt32Array()
+	comp.resize(n)
+	comp.fill(-1)
+	var sizes: Array = []
+	for i in n:
+		if world.water_nav[i] == 0 or comp[i] >= 0:
 			continue
-		var best := c
-		var best_d := 1e30
-		var found := false
-		for ring in [0.0, 0.4, 0.75]:
-			var count := 1
-			if ring > 0.0:
-				count = 12
-			for q in count:
-				var a := TAU * float(q) / 12.0
-				var p: Vector2 = c + Vector2(cos(a), sin(a)) * g.r * float(ring)
-				if not b.has_point(p):
-					continue
-				var t := world.tile_at(p)
-				if t >= 0 and world.land[t] == 1:
-					continue
-				var d := p.distance_squared_to(c)
-				if d < best_d:
-					best_d = d
-					best = p
-					found = true
-			if found:
-				break
-		world.sea_anchor[j] = best
-	# для каждой береговой плитки — ближайшая проходимая ячейка (не дальше 1.5 радиуса ячейки)
-	var reach := g.r * 1.5
-	for i in world.tile_total():
+		var id := sizes.size()
+		var cnt := 0
+		var stack: Array = [i]
+		comp[i] = id
+		while not stack.is_empty():
+			var cur: int = stack.pop_back()
+			cnt += 1
+			for k in 6:
+				var nb := world.neighbor(cur, k)
+				if nb >= 0 and world.water_nav[nb] == 1 and comp[nb] < 0:
+					comp[nb] = id
+					stack.append(nb)
+		sizes.append(cnt)
+	var ocean := -1
+	var best_n := 0
+	for id in sizes.size():
+		if int(sizes[id]) > best_n:
+			best_n = int(sizes[id])
+			ocean = id
+	for i in n:
 		world.tile_sea[i] = -1
 		if world.land[i] == 0:
 			continue
-		var coastal := false
+		var best := -1
+		var best_score := -1
 		for k in 6:
 			var nb := world.neighbor(i, k)
-			if nb < 0 or world.land[nb] == 0:
-				coastal = true
-				break
-		if not coastal:
-			continue
-		var pc := world.center_of(i)
-		var bj := -1
-		var bd := reach * reach
-		for j in n:
-			if world.sea_navigable[j] == 0:
+			if nb < 0 or world.water_nav[nb] == 0 or comp[nb] != ocean:
 				continue
-			var d2 := pc.distance_squared_to(world.sea_anchor[j])
-			if d2 < bd:
-				bd = d2
-				bj = j
-		world.tile_sea[i] = bj
+			var score := 0
+			for k2 in 6:
+				var n2 := world.neighbor(nb, k2)
+				if n2 >= 0 and world.water_nav[n2] == 1:
+					score += 1
+			if score > best_score:
+				best_score = score
+				best = nb
+		world.tile_sea[i] = best
 
 
 static func _is_land(mask: Image, x: float, y: float, w: int, h: int) -> bool:

@@ -156,6 +156,9 @@ static func load_into(world, state) -> bool:
 	var ships: Array = []
 	for sh in d.get("ships", []):
 		var sd: Dictionary = sh
+		var wcell: int = int(sd["cell"])
+		if wcell < 0 or wcell >= state.world.water_nav.size() or state.world.water_nav[wcell] == 0:
+			continue   # корабль из старого сохранения (другая система клеток)
 		var path: Array = []
 		for c in sd["path"]:
 			path.append(int(c))
@@ -166,7 +169,8 @@ static func load_into(world, state) -> bool:
 		ships.append({"id": int(sd["id"]), "owner": int(sd["owner"]), "cell": int(sd["cell"]),
 			"from_cell": int(sd["from_cell"]), "path": path, "p": float(sd["p"]), "state": int(sd["state"]),
 			"cargo": cargo, "land_tile": int(sd["land_tile"]), "type": int(sd.get("type", 0)),
-			"bomb": int(sd.get("bomb", -1)), "bomb_t": float(sd.get("bomb_t", 0.0))})
+			"bomb": int(sd.get("bomb", -1)), "bomb_t": float(sd.get("bomb_t", 0.0)),
+			"dock": int(sd.get("dock", -1)), "dock_to": int(sd.get("dock_to", -1))})
 	state.ships = ships
 	state._next_ship_id = int(d.get("next_ship", 1))
 	var port: Array = d.get("port", [])

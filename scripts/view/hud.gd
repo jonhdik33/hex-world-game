@@ -360,7 +360,7 @@ func _build_menu() -> void:
 
 	# 5 Порты (прокрутка)
 	var pscroll := ScrollContainer.new()
-	pscroll.custom_minimum_size = Vector2(540, 400)
+	pscroll.custom_minimum_size = Vector2(860, 430)
 	port_panel = PortPanel.new()
 	port_panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	pscroll.add_child(port_panel)

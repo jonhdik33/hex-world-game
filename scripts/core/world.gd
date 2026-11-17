@@ -48,7 +48,8 @@ var tile_city := PackedByteArray()     # 0 = обычная плитка, 1 = г
 var tile_factories := PackedByteArray() # число заводов на плитке (только города)
 var tile_port := PackedByteArray()     # 1 = в городе есть порт
 var tile_sea := PackedInt32Array()     # для береговых плиток: ближайшая морская ячейка для флота, иначе -1
-var sea_anchor := PackedVector2Array() # точка на воде внутри ячейки (там рисуется корабль)
+var sea_anchor := PackedVector2Array() # (не используется кораблями) центр морской ячейки
+var water_nav := PackedByteArray()      # 1 = маленькая водная плитка внутри мира, по ней плавают корабли (из центра в центр соседней плитки, суши на пути быть не может)
 
 
 func setup_size(px_w: float, px_h: float, r: float) -> void:
@@ -77,6 +78,8 @@ func setup_size(px_w: float, px_h: float, r: float) -> void:
 	tile_sea.resize(n)
 	tile_sea.fill(-1)
 	sea_anchor.resize(0)
+	water_nav.resize(n)
+	water_nav.fill(0)
 	masses = []
 	countries = []
 	land_count = 0
