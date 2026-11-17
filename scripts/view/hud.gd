@@ -22,9 +22,10 @@ const GameState = preload("res://scripts/core/game_state.gd")
 const FONT := 22
 const SPEED_NAMES: Array = ["Пауза", "x1", "x2", "x3"]
 const ACTION_SLOTS := 7
-const MENU_ICONS: Array = ["balance", "countries", "production", "science", "settings", "ports"]
-const MENU_NAMES: Array = ["Баланс", "Страны", "Производство", "Наука", "Настройки", "Порты"]
+const MENU_ICONS: Array = ["balance", "countries", "production", "science", "settings", "ports", "army"]
+const MENU_NAMES: Array = ["Баланс", "Страны", "Производство", "Наука", "Настройки", "Порты", "Армия"]
 const PortPanel = preload("res://scripts/view/port_panel.gd")
+const ArmyPanel = preload("res://scripts/view/army_panel.gd")
 const ICON_DIR := "res://assets/icons/"
 
 var _top_bar: PanelContainer
@@ -60,6 +61,7 @@ var _result_panel: PanelContainer
 var _result_title: Label
 var _result_text: Label
 var port_panel: PortPanel
+var army_panel: ArmyPanel
 var _blockers: Array = []
 var _continue_btn: Button
 var _sound_check: CheckButton
@@ -367,6 +369,11 @@ func _build_menu() -> void:
 	var p5: PanelContainer = _menu_panels[5]
 	p5.add_child(pscroll)
 
+	# 6 Армия
+	army_panel = ArmyPanel.new()
+	var p6: PanelContainer = _menu_panels[6]
+	p6.add_child(army_panel)
+
 
 func _on_menu_toggled(on: bool, index: int) -> void:
 	menu_toggled.emit(index, on)
@@ -422,6 +429,7 @@ func _close_menu() -> void:
 
 func set_info(text: String) -> void:
 	_info_label.text = text
+	_info_panel.visible = text != ""
 
 
 func show_pick(text: String) -> void:

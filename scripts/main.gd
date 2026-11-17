@@ -80,6 +80,7 @@ func _ready() -> void:
 	add_child(hud)
 	hud.confirm_pressed.connect(_on_confirm)
 	hud.port_panel.action.connect(_on_port_action)
+	hud.army_panel.buy_pressed.connect(_on_army_buy)
 	hud.menu_toggled.connect(_on_menu_toggled)
 	hud.regen_pressed.connect(_on_regen)
 	hud.speed_selected.connect(_on_speed)
@@ -110,6 +111,9 @@ func _process(delta: float) -> void:
 	var adt: float = delta * float(ANIM_FACTOR[speed])
 	state.advance(adt)
 	state.navy_advance(adt)
+	state.army_advance(adt)
+	if hud.menu_open(6):
+		hud.army_panel.update_view(state, state.player)
 	map_view.sync_if_changed()
 	if state.events.size() > 0 or state.map_dirty or state.sounds.size() > 0:
 		_after_ticks()
@@ -469,7 +473,23 @@ func _close_port() -> void:
 	hud.close_menus()
 
 
+func _on_army_buy() -> void:
+	if not playing:
+		return
+	var cid := state.player
+	var why := state.army_buy_reason(cid)
+	if why != "":
+		hud.show_event(why)
+		return
+	state.army_buy(cid)
+	sfx.play("click")
+	hud.army_panel.update_view(state, cid)
+	_refresh_hud()
+
+
 func _on_menu_toggled(index: int, on: bool) -> void:
+	if index == 6 and on and playing:
+		hud.army_panel.update_view(state, state.player)
 	if index == 5 and on and playing:
 		hud.port_panel.rebuild(state, state.player, _port_tile)
 
@@ -821,40 +841,35 @@ func _countries_text() -> String:
 
 
 func _show_info_empty() -> void:
-	hud.set_info("Карта №%d · стран: %d\nНажмите на плитку или на море" % [seed_value, world.countries.size()])
+	if playing:
+		hud.set_info("")
+	else:
+		hud.set_info("Карта №%d · стран: %d\nНажмите на плитку или на море" % [seed_value, world.countries.size()])
 
 
 func _show_land_info(t: int) -> void:
 	var lines: Array[String] = []
 	var cid := world.tile_owner[t]
-	if cid >= 0:
+	var mine := playing and cid == state.player
+	if cid >= 0 and not mine:
 		var cn: Dictionary = world.countries[cid]
 		lines.append("Страна: %s" % cn["name"])
 		lines.append("Плиток: %d · Заводов: %d" % [cn["tiles"], cn["factories"]])
-	var kind := world.tile_city[t]
-	if kind == 2:
-		lines.append("Столица · заводов здесь: %d" % world.tile_factories[t])
-	elif kind == 1:
-		lines.append("Город · заводов здесь: %d" % world.tile_factories[t])
-	else:
-		lines.append("Земля")
-	if world.tile_port[t] == 1:
-		lines.append("Есть порт")
-	lines.append("Плитка: %d, %d" % [world.col_of(t), world.row_of(t)])
-	if playing and state.army_on(t) > 0:
-		var u: Dictionary = state.unit_at(t)
-		var info := "Дивизия: сила %d%%" % int(round(float(u["hp"])))
-		if int(u["recover"]) > 0:
-			info += ", отдыхает %d дн." % int(u["recover"])
-		elif int(u["state"]) != GameState.ST_IDLE:
-			info += ", в походе"
-		elif int(u["owner"]) == state.player:
-			info += "\nНажмите на плитку, чтобы отправить дивизию"
-		lines.append(info)
-	if playing and cid >= 0 and cid != state.player and state.is_at_war(state.player, cid):
-		lines.append("С этой страной война")
-	if playing and state.is_building(t):
-		lines.append("Строится завод: ещё %d дн." % state.build_days_left(t))
+		if playing and state.is_at_war(state.player, cid):
+			lines.append("С этой страной война")
+		if playing and state.army_on(t) > 0:
+			var u: Dictionary = state.unit_at(t)
+			lines.append("Дивизия: сила %d%%" % int(round(float(u["hp"]))))
+	elif mine and world.tile_city[t] != 0:
+		var kind := world.tile_city[t]
+		if kind == 2:
+			lines.append("Столица · заводов: %d" % world.tile_factories[t])
+		else:
+			lines.append("Город · заводов: %d" % world.tile_factories[t])
+		if world.tile_port[t] == 1:
+			lines.append("Есть порт")
+		if state.is_building(t):
+			lines.append("Строится: ещё %d дн." % state.build_days_left(t))
 	hud.set_info("\n".join(lines))
 	_update_actions(t)
 
@@ -876,22 +891,15 @@ func _update_actions(t: int) -> void:
 			list.append({"id": "none", "text": "Перемирие с %s" % cn["name"], "enabled": false})
 		hud.set_actions(list)
 		return
-	var reason := state.build_block_reason(cid, t)
-	var label := "Построить завод (%s)" % GameState.fmt(state.build_cost(t))
-	if reason == "":
-		list.append({"id": "build", "text": label, "enabled": true})
-	elif reason == "Не хватает денег":
-		list.append({"id": "build", "text": label + " — нет денег", "enabled": false})
-	else:
-		list.append({"id": "build", "text": reason, "enabled": false})
 	if world.tile_city[t] != 0:
-		var r2 := state.recruit_block_reason(cid, t)
-		var l2 := "Нанять дивизию (%s)" % GameState.fmt(GameState.RECRUIT_COST)
-		if r2 == "Не хватает денег":
-			l2 += " — нет денег"
-		elif r2 == "Не хватает снаряжения":
-			l2 += " — нет снаряжения"
-		list.append({"id": "recruit", "text": l2, "enabled": r2 == ""})
+		var reason := state.build_block_reason(cid, t)
+		var label := "Построить завод (%s)" % GameState.fmt(state.build_cost(t))
+		if reason == "":
+			list.append({"id": "build", "text": label, "enabled": true})
+		elif reason == "Не хватает денег":
+			list.append({"id": "build", "text": label + " — нет денег", "enabled": false})
+		else:
+			list.append({"id": "build", "text": reason, "enabled": false})
 	if world.tile_city[t] != 0 and world.tile_sea[t] >= 0:
 		if world.tile_port[t] == 0:
 			var rp := state.navy_port_block_reason(cid, t)
@@ -913,6 +921,9 @@ func _update_actions(t: int) -> void:
 
 
 func _show_sea_info(j: int) -> void:
+	if playing:
+		hud.set_info("")
+		return
 	var g := world.sea_grid
 	var lines: Array[String] = []
 	if world.sea_coastal[j] == 1:

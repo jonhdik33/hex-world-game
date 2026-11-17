@@ -62,6 +62,7 @@ var world: World
 var day: int = 0              # дней с начала игры
 var player: int = -1          # id страны игрока, -1 = ещё не выбрана
 var money: Array = []         # казна каждой страны (float)
+var recruit_queue: Array = []   # покупки дивизий в процессе: {cid, t}
 var population: Array = []    # население каждой страны (float)
 var army: Array = []          # дивизий у каждой страны (int), всегда = сумма по плиткам
 var tile_army := PackedInt32Array()   # 1 = на плитке стоит дивизия
@@ -102,6 +103,7 @@ func reset() -> void:
 	population = []
 	army = []
 	build_queue = []
+	recruit_queue = []
 	events = []
 	sounds = []
 	battles = []
@@ -416,6 +418,95 @@ func _remove_one_division(cid: int) -> void:
 			worst = e
 	if not worst.is_empty():
 		_remove_unit(worst)
+
+
+# ---------- покупка дивизий через меню «Армия» ----------
+const BUY_BASE := 2000.0
+const BUY_STEP := 300.0
+const BUY_POP := 10000.0
+const BUY_SECONDS := 10.0
+
+
+func army_queued(cid: int) -> int:
+	var n := 0
+	for q in recruit_queue:
+		if int(Dictionary(q)["cid"]) == cid:
+			n += 1
+	return n
+
+
+## Цена следующей дивизии: 2000 + 300 за каждую уже имеющуюся или покупаемую.
+func army_buy_price(cid: int) -> float:
+	return BUY_BASE + BUY_STEP * float(int(army[cid]) + army_queued(cid))
+
+
+func army_buy_reason(cid: int) -> String:
+	if float(money[cid]) < army_buy_price(cid):
+		return "Не хватает денег"
+	if float(population[cid]) < BUY_POP:
+		return "Не хватает населения"
+	return ""
+
+
+func army_buy(cid: int) -> bool:
+	if army_buy_reason(cid) != "":
+		return false
+	money[cid] = float(money[cid]) - army_buy_price(cid)
+	population[cid] = float(population[cid]) - BUY_POP
+	recruit_queue.append({"cid": cid, "t": 0.0})
+	return true
+
+
+## Прогресс (0..1) текущей покупки страны.
+func army_progress(cid: int) -> float:
+	for q in recruit_queue:
+		var d: Dictionary = q
+		if int(d["cid"]) == cid:
+			return clampf(float(d["t"]) / BUY_SECONDS, 0.0, 1.0)
+	return 0.0
+
+
+## Где появится новая дивизия: в столице, если занята — в ближайшем свободном городе.
+func army_spawn_tile(cid: int) -> int:
+	var w = world
+	var cap: int = w.countries[cid]["capital"]
+	if w.tile_owner[cap] == cid and not unit_on.has(cap):
+		return cap
+	var best := -1
+	var best_d := 0.0
+	var cc: Vector2 = w.center_of(cap)
+	for i in w.tile_total():
+		if w.land[i] == 1 and w.tile_owner[i] == cid and w.tile_city[i] != 0 and not unit_on.has(i):
+			var d: float = cc.distance_squared_to(w.center_of(i))
+			if best < 0 or d < best_d:
+				best = i
+				best_d = d
+	return best
+
+
+func army_advance(dt: float) -> void:
+	var busy := {}
+	for q in recruit_queue.duplicate():
+		var d: Dictionary = q
+		var cid: int = d["cid"]
+		if int(world.countries[cid]["tiles"]) <= 0:
+			recruit_queue.erase(d)
+			continue
+		if busy.has(cid):
+			continue   # дивизии страны появляются по очереди
+		busy[cid] = true
+		d["t"] = minf(BUY_SECONDS, float(d["t"]) + dt)
+		if float(d["t"]) < BUY_SECONDS:
+			continue
+		var t := army_spawn_tile(cid)
+		if t < 0:
+			continue   # свободного города нет — ждём
+		recruit_queue.erase(d)
+		_add_unit(cid, t)
+		_rebuild()
+		if cid == player:
+			events.append("Дивизия готова")
+			sounds.append("capture")
 
 
 func recruit_block_reason(cid: int, t: int) -> String:

@@ -51,6 +51,7 @@ static func save(world, state, seed_value: int) -> bool:
 		"tech": state.tech,
 		"research": state.research,
 		"build_queue": state.build_queue,
+		"recruit_queue": state.recruit_queue,
 		"squads": squads,
 		"ships": ships,
 		"next_ship": state._next_ship_id,
@@ -148,6 +149,11 @@ static func load_into(world, state) -> bool:
 			"days_left": int(bd["days_left"]), "new_city": bool(bd["new_city"]),
 			"kind": String(bd.get("kind", "factory"))})
 	state.build_queue = bq
+	var rq: Array = []
+	for r in d.get("recruit_queue", []):
+		var rd2: Dictionary = r
+		rq.append({"cid": int(rd2["cid"]), "t": float(rd2["t"])})
+	state.recruit_queue = rq
 	var squads: Array = []
 	for sq in d["squads"]:
 		squads.append(_unit_from(sq))
