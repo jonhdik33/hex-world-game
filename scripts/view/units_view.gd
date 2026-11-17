@@ -139,8 +139,6 @@ func _draw() -> void:
 		if hp < 0.5:
 			hc = Color(0.95, 0.6, 0.2)
 		draw_rect(Rect2(bar.position, Vector2(bar.size.x * clampf(hp, 0.0, 1.0), bar.size.y)), hc)
-		if int(u["recover"]) > 0:
-			draw_string(font, pos + Vector2(s * 0.3, -s * 0.3), "z", HORIZONTAL_ALIGNMENT_LEFT, -1, fs, Color(1.0, 0.9, 0.3))
 
 
 	# бои: атакующие тянутся к границе, защитники отвечают, на стыке вспышка и скрещённые линии

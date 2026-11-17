@@ -97,7 +97,7 @@ func rebuild(st: GS, cid: int, sel: int) -> void:
 		if w.land[i] == 1 and w.tile_owner[i] == cid and w.tile_port[i] == 1:
 			ports.append(i)
 	add_child(_label("Порты", 28))
-	add_child(_label("Деньги: %s · Кораблей: %d/%d" % [GS.fmt(float(st.money[cid])), st.ship_count(cid), GS.MAX_SHIPS]))
+	add_child(_label("Деньги: %s · Кораблей: %d" % [GS.fmt(float(st.money[cid])), st.ship_count(cid)]))
 	if ports.is_empty():
 		add_child(_label("У вас нет портов. Выберите свой город на берегу и постройте порт."))
 		return
@@ -199,5 +199,5 @@ func rebuild(st: GS, cid: int, sel: int) -> void:
 	bottom.alignment = BoxContainer.ALIGNMENT_END
 	bottom.add_theme_constant_override("separation", 8)
 	bottom.add_child(_btn("Выбрать все корабли", _select_all, docked_ships.size() > 0))
-	bottom.add_child(_btn("Выйти из гавани", _emit.bind("leave", -1, t), docked_ships.size() > 0))
+	bottom.add_child(_btn("Выйти из гавани (%d)" % picked.size(), _emit.bind("leave", -1, t), docked_ships.size() > 0))
 	right.add_child(bottom)

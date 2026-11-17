@@ -240,6 +240,39 @@ func _enemies_around(e: Dictionary) -> int:
 	return n
 
 
+## Плитки, связанные своей территорией со столицей или прибрежным городом страны (без прохода через вражеские дивизии).
+func _supply_reach(cid: int) -> Dictionary:
+	var w = world
+	var seen := {}
+	var queue: Array = []
+	var cap: int = w.countries[cid]["capital"]
+	for i in w.tile_total():
+		if w.land[i] == 1 and w.tile_owner[i] == cid and (i == cap or (w.tile_city[i] != 0 and w.tile_sea[i] >= 0)):
+			if not _enemy_unit_on(cid, i):
+				seen[i] = true
+				queue.append(i)
+	var qi := 0
+	while qi < queue.size():
+		var cur: int = queue[qi]
+		qi += 1
+		for k in 6:
+			var nb: int = w.neighbor(cur, k)
+			if nb < 0 or seen.has(nb) or w.land[nb] == 0 or w.tile_owner[nb] != cid:
+				continue
+			if _enemy_unit_on(cid, nb):
+				continue
+			seen[nb] = true
+			queue.append(nb)
+	return seen
+
+
+func _enemy_unit_on(cid: int, t: int) -> bool:
+	if not unit_on.has(t):
+		return false
+	var u: Dictionary = unit_on[t]
+	return is_at_war(cid, int(u["owner"]))
+
+
 func tick_day() -> void:
 	for cid in world.countries.size():
 		money[cid] = float(money[cid]) + daily_net(cid)
@@ -251,10 +284,17 @@ func tick_day() -> void:
 			_remove_one_division(cid)
 			if cid == player:
 				events.append("Нет денег: распущена одна дивизия")
+	var linked := {}
 	for sq in squads:
 		var e: Dictionary = sq
 		if _enemies_around(e) >= 2:
 			continue   # дивизию окружают враги: отдых и лечение стоят
+		var oc: int = e["owner"]
+		if not linked.has(oc):
+			linked[oc] = _supply_reach(oc)
+		var reach: Dictionary = linked[oc]
+		if not reach.has(int(e["tile"])):
+			continue   # окружена: нет пути к столице или прибрежному городу — не лечится
 		if int(e["recover"]) > 0:
 			e["recover"] = int(e["recover"]) - 1
 		e["hp"] = minf(MAX_HP, float(e["hp"]) + HEAL_PER_DAY)
@@ -616,7 +656,7 @@ func advance(dt: float) -> void:
 		if bool(e["dead"]):
 			continue
 		var st: int = e["state"]
-		if st == ST_IDLE or st == ST_FIGHT or int(e["recover"]) > 0:
+		if st == ST_IDLE or st == ST_FIGHT:
 			continue
 		_advance_move(e, dt)
 	_tick_battles(dt)
@@ -632,6 +672,17 @@ func _advance_move(e: Dictionary, dt: float) -> void:
 	if not can_enter(cid, nxt):
 		_stop(e)
 		return
+	# на следующей плитке стоит своя дивизия: не наслаиваемся — ждём, если она уходит, иначе останавливаемся
+	if unit_on.has(nxt):
+		var occ: Dictionary = unit_on[nxt]
+		if int(occ["owner"]) == cid:
+			if int(occ["state"]) == ST_MOVE and float(e["wait_t"]) < WAIT_REROUTE:
+				e["wait_t"] = float(e["wait_t"]) + dt
+				if float(e["p"]) > 0.4:
+					e["p"] = 0.4
+			else:
+				_stop(e)
+			return
 	var hostile: bool = world.tile_owner[nxt] != cid and not bool(e["crossed"])
 	var p: float = float(e["p"]) + dt / STEP_SECONDS
 	if hostile and p >= 0.5 and unit_on.has(nxt):
@@ -643,11 +694,7 @@ func _advance_move(e: Dictionary, dt: float) -> void:
 		return
 	# стрелка дошла до центра следующей плитки: дивизия переходит на неё
 	if unit_on.has(nxt):
-		# занято своей дивизией: ждём, потом ищем обход
-		e["wait_t"] = float(e["wait_t"]) + dt
-		if float(e["wait_t"]) > WAIT_REROUTE:
-			e["wait_t"] = 0.0
-			_reroute(e)
+		_stop(e)   # плитку заняли, пока шли: остаёмся на прежней
 		return
 	# плитка меняет цвет только теперь, когда солдат дошёл до её центра
 	var ow: int = world.tile_owner[nxt]
@@ -667,8 +714,8 @@ func _advance_move(e: Dictionary, dt: float) -> void:
 	e["p"] = 0.0
 	e["crossed"] = false
 	e["wait_t"] = 0.0
-	if path.is_empty():
-		_stop(e)
+	if path.is_empty() or int(e["recover"]) > 0:
+		_stop(e)   # после боя остаёмся на последней занятой плитке
 
 
 func _reroute(e: Dictionary) -> void:
@@ -1184,8 +1231,6 @@ func navy_ship_block_reason(cid: int, t: int, ship_type: int) -> String:
 	var w = world
 	if t < 0 or w.tile_owner[t] != cid or w.tile_port[t] == 0:
 		return "Нужен порт"
-	if navy_count_of(cid) >= MAX_SHIPS:
-		return "Максимум кораблей (%d)" % MAX_SHIPS
 	if float(money[cid]) < navy_cost_of(ship_type):
 		return "Не хватает денег"
 	return ""
