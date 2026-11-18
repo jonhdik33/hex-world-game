@@ -38,7 +38,19 @@ static func save(world, state, seed_value: int) -> bool:
 	var truce: Array = []
 	for k in state.truce.keys():
 		truce.append([int(k), int(state.truce[k])])
+	var jf: Array = []
+	for k in state.justify.keys():
+		jf.append([int(k), int(state.justify[k])])
+	var wc: Array = []
+	for k in state.war_cost.keys():
+		wc.append([int(k), int(state.war_cost[k])])
 	var data := {
+		"pol": state.pol_points,
+		"army_total": state.army_total,
+		"justify": jf,
+		"war_cost": wc,
+		"alliance": state.alliance,
+		"next_alliance": state._next_alliance,
 		"v": VERSION,
 		"seed": seed_value,
 		"day": state.day,
@@ -154,6 +166,29 @@ static func load_into(world, state) -> bool:
 		var rd2: Dictionary = r
 		rq.append({"cid": int(rd2["cid"]), "t": float(rd2["t"])})
 	state.recruit_queue = rq
+	var n_c: int = world.countries.size()
+	state.pol_points = []
+	state.alliance = []
+	var pl: Array = d.get("pol", [])
+	var al: Array = d.get("alliance", [])
+	for c in n_c:
+		state.pol_points.append(float(pl[c]) if c < pl.size() else 60.0)
+		state.alliance.append(int(al[c]) if c < al.size() else -1)
+	state._next_alliance = int(d.get("next_alliance", 1))
+	var at_l: Array = d.get("army_total", [])
+	state.army_total = []
+	for c3 in n_c:
+		state.army_total.append(int(at_l[c3]) if c3 < at_l.size() else 0)
+	for sq3 in state.squads:
+		var o3: int = Dictionary(sq3)["owner"]
+		if int(state.army_total[o3]) < int(state.army[o3]):
+			state.army_total[o3] = int(state.army[o3])
+	state.justify = {}
+	for j in d.get("justify", []):
+		state.justify[int(j[0])] = int(j[1])
+	state.war_cost = {}
+	for j2 in d.get("war_cost", []):
+		state.war_cost[int(j2[0])] = int(j2[1])
 	var squads: Array = []
 	for sq in d["squads"]:
 		squads.append(_unit_from(sq))

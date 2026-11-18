@@ -22,10 +22,11 @@ const GameState = preload("res://scripts/core/game_state.gd")
 const FONT := 22
 const SPEED_NAMES: Array = ["Пауза", "x1", "x2", "x3"]
 const ACTION_SLOTS := 7
-const MENU_ICONS: Array = ["balance", "countries", "production", "science", "settings", "ports", "army"]
-const MENU_NAMES: Array = ["Баланс", "Страны", "Производство", "Наука", "Настройки", "Порты", "Армия"]
+const MENU_ICONS: Array = ["balance", "countries", "production", "science", "settings", "ports", "army", "politics", "population"]
+const MENU_NAMES: Array = ["Баланс", "Страны", "Производство", "Наука", "Настройки", "Порты", "Армия", "Политика", "Население"]
 const PortPanel = preload("res://scripts/view/port_panel.gd")
 const ArmyPanel = preload("res://scripts/view/army_panel.gd")
+const PolPanel = preload("res://scripts/view/pol_panel.gd")
 const ICON_DIR := "res://assets/icons/"
 
 var _top_bar: PanelContainer
@@ -62,6 +63,9 @@ var _result_title: Label
 var _result_text: Label
 var port_panel: PortPanel
 var army_panel: ArmyPanel
+var pol_panel: PolPanel
+var _lbl_pol: Label
+var _pop_label: Label
 var _blockers: Array = []
 var _continue_btn: Button
 var _sound_check: CheckButton
@@ -87,7 +91,11 @@ func _build() -> void:
 	_lbl_fact = _stat_label(row, Color(0.95, 0.6, 0.45), "factory", "Заводы ")
 	_lbl_army = _stat_label(row, Color(0.75, 0.9, 0.6), "soldier", "Армия ")
 	_lbl_pop = _stat_label(row, Color(0.6, 0.85, 1.0), "people", "Население ")
+	_lbl_pol = _stat_label(row, Color(0.8, 0.75, 1.0), "politics", "Политика ")
 	_lbl_date = _stat_label(row, Color(0.85, 0.9, 0.95), "calendar", "")
+	_make_clickable(_lbl_money, 0)
+	_make_clickable(_lbl_pop, 8)
+	_make_clickable(_lbl_pol, 7)
 	_top_bar.visible = false
 
 	# --- подсказка (во время выбора страны) ---
@@ -374,6 +382,33 @@ func _build_menu() -> void:
 	var p6: PanelContainer = _menu_panels[6]
 	p6.add_child(army_panel)
 
+	# 7 Политика
+	pol_panel = PolPanel.new()
+	var p7: PanelContainer = _menu_panels[7]
+	p7.add_child(pol_panel)
+
+	# 8 Население (по нажатию на значок населения)
+	_pop_label = _plain_label("", Color(0.92, 0.95, 1.0))
+	_pop_label.custom_minimum_size = Vector2(320, 0)
+	var p8: PanelContainer = _menu_panels[8]
+	p8.add_child(_pop_label)
+	var b8: Button = _menu_btns[8]
+	b8.visible = false
+	p8.anchor_left = 0.0
+	p8.anchor_right = 0.0
+	p8.offset_left = 8.0
+	p8.offset_right = 0.0
+	p8.grow_horizontal = Control.GROW_DIRECTION_END
+
+	# баланс открывается по нажатию на казну (слева сверху), своей кнопки справа нет
+	var b0: Button = _menu_btns[0]
+	b0.visible = false
+	p0.anchor_left = 0.0
+	p0.anchor_right = 0.0
+	p0.offset_left = 8.0
+	p0.offset_right = 0.0
+	p0.grow_horizontal = Control.GROW_DIRECTION_END
+
 
 func _on_menu_toggled(on: bool, index: int) -> void:
 	menu_toggled.emit(index, on)
@@ -484,6 +519,29 @@ func set_resources(money: float, net: float, factories: int, army: int, pop: flo
 	_lbl_army.text = "%s%d" % [_pfx[_lbl_army], army]
 	_lbl_pop.text = "%s%s" % [_pfx[_lbl_pop], GameState.fmt(pop)]
 	_lbl_date.text = date_text
+
+
+func set_politics(points: float) -> void:
+	_lbl_pol.text = "%s%d" % [_pfx[_lbl_pol], int(points)]
+
+
+func _make_clickable(lbl: Label, index: int) -> void:
+	var box: Control = lbl.get_parent()
+	box.mouse_filter = Control.MOUSE_FILTER_STOP
+	lbl.mouse_filter = Control.MOUSE_FILTER_PASS
+	box.gui_input.connect(_on_stat_input.bind(index))
+
+
+func _on_stat_input(ev: InputEvent, index: int) -> void:
+	if ev is InputEventMouseButton and ev.pressed and ev.button_index == MOUSE_BUTTON_LEFT:
+		if menu_open(index):
+			close_menus()
+		else:
+			open_menu(index)
+
+
+func set_pop_text(text: String) -> void:
+	_pop_label.text = text
 
 
 func set_balance_text(text: String) -> void:

@@ -81,6 +81,7 @@ func _ready() -> void:
 	hud.confirm_pressed.connect(_on_confirm)
 	hud.port_panel.action.connect(_on_port_action)
 	hud.army_panel.buy_pressed.connect(_on_army_buy)
+	hud.pol_panel.leave_pressed.connect(_on_pol_leave)
 	hud.menu_toggled.connect(_on_menu_toggled)
 	hud.regen_pressed.connect(_on_regen)
 	hud.speed_selected.connect(_on_speed)
@@ -114,6 +115,8 @@ func _process(delta: float) -> void:
 	state.army_advance(adt)
 	if hud.menu_open(6):
 		hud.army_panel.update_view(state, state.player)
+	if hud.menu_open(7):
+		hud.pol_panel.update_view(state, state.player)
 	map_view.sync_if_changed()
 	if state.events.size() > 0 or state.map_dirty or state.sounds.size() > 0:
 		_after_ticks()
@@ -256,6 +259,18 @@ func _on_action(id: String) -> void:
 		if state.start_build(cid, t):
 			hud.show_event("Начато строительство завода: %d дн." % GameState.BUILD_DAYS)
 			map_view.set_construction(state.construction_tiles(cid))
+	elif id == "justify":
+		var oj: int = world.tile_owner[t]
+		if oj >= 0 and state.pol_justify(cid, oj):
+			hud.show_event("Война оправдывается: %d дн." % GameState.JUSTIFY_DAYS)
+		elif oj >= 0:
+			hud.show_event(state.pol_justify_reason(cid, oj))
+	elif id == "ally":
+		var oa: int = world.tile_owner[t]
+		if oa >= 0 and state.pol_alliance(cid, oa):
+			hud.show_event("Альянс заключён")
+		elif oa >= 0:
+			hud.show_event(state.pol_alliance_reason(cid, oa))
 	elif id == "recruit":
 		if state.recruit(cid, t):
 			hud.show_event("Нанята дивизия")
@@ -279,10 +294,11 @@ func _on_action(id: String) -> void:
 		var o: int = world.tile_owner[t]
 		if o >= 0:
 			var cn: Dictionary = world.countries[o]
-			if state.declare_war(cid, o):
+			var rw: Dictionary = state.player_declare_war(o)
+			if rw["ok"]:
 				hud.show_event("Война объявлена: %s" % cn["name"])
 			else:
-				hud.show_event("Нельзя: недавно заключён мир")
+				hud.show_event(rw["msg"])
 	elif id == "peace":
 		var o2: int = world.tile_owner[t]
 		if o2 >= 0:
@@ -473,6 +489,14 @@ func _close_port() -> void:
 	hud.close_menus()
 
 
+func _on_pol_leave() -> void:
+	if playing and state.pol_leave(state.player):
+		hud.show_event("Вы покинули альянс")
+		units.refresh()
+		map_view.refresh()
+		hud.pol_panel.update_view(state, state.player)
+
+
 func _on_army_buy() -> void:
 	if not playing:
 		return
@@ -488,6 +512,8 @@ func _on_army_buy() -> void:
 
 
 func _on_menu_toggled(index: int, on: bool) -> void:
+	if index == 7 and on and playing:
+		hud.pol_panel.update_view(state, state.player)
 	if index == 6 and on and playing:
 		hud.army_panel.update_view(state, state.player)
 	if index == 5 and on and playing:
@@ -546,7 +572,7 @@ func _has_own_unit(t: int) -> bool:
 
 func _can_order_to(i: int) -> bool:
 	var o: int = world.tile_owner[i]
-	return o == state.player or (o >= 0 and state.is_at_war(state.player, o))
+	return o == state.player or (o >= 0 and (state.is_at_war(state.player, o) or state.allied(state.player, o)))
 
 
 func _try_move(from: int, to: int) -> void:
@@ -764,6 +790,8 @@ func _refresh_hud() -> void:
 		state.format_date()
 	)
 	hud.set_balance_text(_balance_text(cid))
+	hud.set_politics(float(state.pol_points[cid]))
+	hud.set_pop_text("Население\n\nСейчас: %s\nПрирост: +%d в день" % [GameState.fmt(float(state.population[cid])), int(GameState.POP_GROWTH_FLAT)])
 	hud.set_countries_text(_countries_text())
 	_refresh_production(cid)
 	_refresh_research(cid)
@@ -771,20 +799,11 @@ func _refresh_hud() -> void:
 
 func _balance_text(cid: int) -> String:
 	var b: Dictionary = state.budget(cid)
-	var army_n: int = state.army[cid]
-	var cn: Dictionary = world.countries[cid]
-	var lines: Array[String] = ["Казна: %s" % GameState.fmt(float(state.money[cid])), "Население: %s" % GameState.fmt(float(state.population[cid])), "Баланс за день"]
-	lines.append("+ Налоги: %s" % GameState.fmt(b["tax"]))
-	lines.append("+ Заводы (%d): %s" % [cn["factories"], GameState.fmt(b["industry"])])
-	lines.append("- Заводы, содержание: %s" % GameState.fmt(b["upkeep_factories"]))
-	lines.append("- Города (%d): %s" % [cn["cities"], GameState.fmt(b["upkeep_cities"])])
-	lines.append("- Армия (%d див.): %s" % [army_n, GameState.fmt(b["upkeep_army"])])
-	if float(b["upkeep_ships"]) > 0.0:
-		lines.append("- Флот (%d): %s" % [state.ship_count(cid), GameState.fmt(b["upkeep_ships"])])
-	lines.append("ИТОГО: %s/день" % GameState.fmt_signed(b["net"]))
-	var nb := state.construction_tiles(cid).size()
-	if nb > 0:
-		lines.append("Строек: %d" % nb)
+	var lines: Array[String] = ["Казна: %s" % GameState.fmt(float(state.money[cid])), ""]
+	lines.append("Заводы приносят: %s" % GameState.fmt_signed(b["industry"]))
+	lines.append("Армия содержание: %s" % GameState.fmt_signed(-float(b["upkeep_army"])))
+	lines.append("")
+	lines.append("Итого в день: %s" % GameState.fmt_signed(b["net"]))
 	return "\n".join(lines)
 
 
@@ -836,6 +855,8 @@ func _countries_text() -> String:
 			tag = " (вы)"
 		elif state.is_at_war(state.player, ci):
 			tag = " [ВОЙНА]"
+		elif state.allied(state.player, ci):
+			tag = " [союзник]"
 		lines.append("%s%s: %d пл., %d див., %d зав.%s" % [cn["name"], tag, cn["tiles"], state.army[ci], cn["factories"], ""])
 	return "\n".join(lines)
 
@@ -885,10 +906,29 @@ func _update_actions(t: int) -> void:
 		var cn: Dictionary = world.countries[o]
 		if state.is_at_war(cid, o):
 			list.append({"id": "peace", "text": "Предложить мир: %s" % cn["name"], "enabled": true})
-		elif state.can_declare(cid, o):
-			list.append({"id": "war", "text": "Объявить войну: %s" % cn["name"], "enabled": true})
-		else:
+		elif state.allied(cid, o):
+			list.append({"id": "none", "text": "Союзник: %s" % cn["name"], "enabled": false})
+		elif not state.can_declare(cid, o):
 			list.append({"id": "none", "text": "Перемирие с %s" % cn["name"], "enabled": false})
+		else:
+			var js: int = state.pol_justify_state(o)
+			if js < 0:
+				var wc: int = state.pol_cost_of_war(o)
+				var lj := "Оправдать войну (%d очков)" % wc
+				list.append({"id": "justify", "text": lj, "enabled": state.pol_justify_reason(cid, o) == ""})
+			elif js > 0:
+				list.append({"id": "none", "text": "Оправдание войны: ещё %d дн." % js, "enabled": false})
+			else:
+				list.append({"id": "war", "text": "Объявить войну: %s" % cn["name"], "enabled": true})
+		if not state.is_at_war(cid, o) and not state.allied(cid, o):
+			var ra := state.pol_alliance_reason(cid, o)
+			var la := "Создать альянс (%d очков)" % int(GameState.ALLY_COST)
+			if int(state.alliance[o]) >= 0:
+				la = "Вступить в альянс (%d очков)" % int(GameState.ALLY_COST)
+			elif int(state.alliance[cid]) >= 0:
+				la = "Позвать в альянс (%d очков)" % int(GameState.ALLY_COST)
+			if ra == "" or ra == "Не хватает очков":
+				list.append({"id": "ally", "text": la, "enabled": ra == ""})
 		hud.set_actions(list)
 		return
 	if world.tile_city[t] != 0:

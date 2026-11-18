@@ -13,15 +13,17 @@ const Navy = preload("res://scripts/core/navy.gd")
 const BotAI = preload("res://scripts/core/bot_ai.gd")
 
 const DAYS_PER_YEAR := 360
-const POP_PER_TILE := 30000.0         # людей на плитку при старте
+const START_POP := 35000.0            # население страны при старте
+const START_MONEY := 20000.0          # казна при старте
+const POP_GROWTH_FLAT := 100.0        # прирост населения в день
 const POP_GROWTH_PER_DAY := 0.0001    # рост населения в день (≈3.7% в год)
-const TAX_PER_PERSON := 0.0008        # налог с одного человека в день
-const INCOME_PER_FACTORY := 120.0     # доход с одного завода в день
+const TAX_PER_PERSON := 0.0           # налогов нет
+const INCOME_PER_FACTORY := 90.0     # доход с одного завода в день
 const START_MONEY_DAYS := 30.0        # стартовая казна = столько дней чистой прибыли
 
 # расходы (в день)
-const FACTORY_UPKEEP := 30.0          # содержание одного завода
-const CITY_UPKEEP := 20.0             # содержание одного города
+const FACTORY_UPKEEP := 0.0          # содержание одного завода
+const CITY_UPKEEP := 0.0             # содержание одного города
 const DIVISION_UPKEEP := 50.0         # содержание одной дивизии
 const ARMY_TILES_PER_DIVISION := 16.0  # стартовая армия: 1 дивизия на столько плиток
 
@@ -62,6 +64,12 @@ var world: World
 var day: int = 0              # дней с начала игры
 var player: int = -1          # id страны игрока, -1 = ещё не выбрана
 var money: Array = []         # казна каждой страны (float)
+var army_total: Array = []      # сколько дивизий страна получила за всё время (для цены покупки)
+var pol_points: Array = []      # политические очки стран
+var justify: Dictionary = {}    # цель -> дней до разрешения войны (0 = можно), только для игрока
+var war_cost: Dictionary = {}   # цель -> цена оправдания войны (случайно 30-50)
+var alliance: Array = []        # номер альянса страны или -1
+var _next_alliance: int = 1
 var recruit_queue: Array = []   # покупки дивизий в процессе: {cid, t}
 var population: Array = []    # население каждой страны (float)
 var army: Array = []          # дивизий у каждой страны (int), всегда = сумма по плиткам
@@ -104,6 +112,12 @@ func reset() -> void:
 	army = []
 	build_queue = []
 	recruit_queue = []
+	army_total = []
+	pol_points = []
+	justify = {}
+	war_cost = {}
+	alliance = []
+	_next_alliance = 1
 	events = []
 	sounds = []
 	battles = []
@@ -112,7 +126,10 @@ func reset() -> void:
 	map_dirty = false
 	for cid in world.countries.size():
 		var cn: Dictionary = world.countries[cid]
-		population.append(float(cn["tiles"]) * POP_PER_TILE)
+		population.append(START_POP)
+		pol_points.append(POL_START)
+		army_total.append(0)
+		alliance.append(-1)
 		army.append(maxi(1, int(round(float(cn["tiles"]) / ARMY_TILES_PER_DIVISION))))
 		money.append(0.0)
 	rng.seed = 424242
@@ -143,7 +160,7 @@ func reset() -> void:
 		research.append({})
 	# стартовая казна считается, когда уже есть доли заводов и технологии (раньше money оставалась 0)
 	for cid in world.countries.size():
-		money[cid] = maxf(0.0, daily_net(cid)) * START_MONEY_DAYS
+		money[cid] = START_MONEY
 	_place_armies()
 	navy_give_start_ships()
 	_rebuild()
@@ -184,12 +201,12 @@ func ship_count(cid: int) -> int:
 func budget(cid: int) -> Dictionary:
 	var cn: Dictionary = world.countries[cid]
 	var tax := float(population[cid]) * TAX_PER_PERSON
-	var civ := 1.0 - float(mil_share[cid])
-	var industry := float(cn["factories"]) * INCOME_PER_FACTORY * civ * (1.0 + float(TECH_BONUS[1]) * float(tech_level(cid, 1)))
+	var civ := 1.0
+	var industry := float(cn["factories"]) * INCOME_PER_FACTORY
 	var up_f := float(cn["factories"]) * FACTORY_UPKEEP
 	var up_c := float(cn["cities"]) * CITY_UPKEEP
 	var up_a := float(army[cid]) * DIVISION_UPKEEP
-	var up_s := fleet_upkeep(cid)
+	var up_s := 0.0   # флот в бюджет не входит
 	var income := tax + industry
 	var expenses := up_f + up_c + up_a + up_s
 	return {
@@ -218,9 +235,8 @@ func equip_per_day(cid: int) -> float:
 
 ## Стартовая казна игрока: если почему-то нулевая (старое сохранение, сбой), считаем заново.
 func ensure_start_money(cid: int) -> void:
-	var start := maxf(0.0, daily_net(cid)) * START_MONEY_DAYS
-	if float(money[cid]) < start * 0.5:
-		money[cid] = start
+	if day == 0 and float(money[cid]) <= 0.0:
+		money[cid] = START_MONEY
 
 
 func daily_net(cid: int) -> float:
@@ -278,7 +294,9 @@ func _enemy_unit_on(cid: int, t: int) -> bool:
 func tick_day() -> void:
 	for cid in world.countries.size():
 		money[cid] = float(money[cid]) + daily_net(cid)
-		population[cid] = float(population[cid]) * (1.0 + POP_GROWTH_PER_DAY)
+		if int(world.countries[cid]["tiles"]) > 0:
+			population[cid] = float(population[cid]) + POP_GROWTH_FLAT
+			pol_points[cid] = float(pol_points[cid]) + POL_DAILY
 		equipment[cid] = float(equipment[cid]) + equip_per_day(cid)
 		_progress_research(cid)
 		# нет денег — распускаем по одной дивизии в день, пока казна не выйдет из минуса
@@ -300,6 +318,8 @@ func tick_day() -> void:
 		if int(e["recover"]) > 0:
 			e["recover"] = int(e["recover"]) - 1
 		e["hp"] = minf(MAX_HP, float(e["hp"]) + HEAL_PER_DAY)
+	for k in justify.keys():
+		justify[k] = maxi(0, int(justify[k]) - 1)
 	_progress_builds()
 	for cid in world.countries.size():
 		if cid != player and (day + cid) % bot_period() == 0:
@@ -356,6 +376,7 @@ func _add_unit(cid: int, t: int) -> Dictionary:
 		"p": 0.0, "crossed": false, "state": ST_IDLE, "recover": 0, "fight_t": 0.0, "wait_t": 0.0, "dead": false, "pre": 0,
 	}
 	_next_id += 1
+	army_total[cid] = int(army_total[cid]) + 1
 	squads.append(e)
 	unit_on[t] = e
 	return e
@@ -437,7 +458,7 @@ func army_queued(cid: int) -> int:
 
 ## Цена следующей дивизии: 2000 + 300 за каждую уже имеющуюся или покупаемую.
 func army_buy_price(cid: int) -> float:
-	return BUY_BASE + BUY_STEP * float(int(army[cid]) + army_queued(cid))
+	return BUY_BASE + BUY_STEP * float(int(army_total[cid]) + army_queued(cid))
 
 
 func army_buy_reason(cid: int) -> String:
@@ -481,6 +502,15 @@ func army_spawn_tile(cid: int) -> int:
 			if best < 0 or d < best_d:
 				best = i
 				best_d = d
+	if best >= 0:
+		return best
+	# все города заняты: ближайшая к столице свободная своя плитка
+	for i in w.tile_total():
+		if w.land[i] == 1 and w.tile_owner[i] == cid and not unit_on.has(i):
+			var d2: float = cc.distance_squared_to(w.center_of(i))
+			if best < 0 or d2 < best_d:
+				best = i
+				best_d = d2
 	return best
 
 
@@ -614,11 +644,195 @@ func can_declare(a: int, b: int) -> bool:
 
 
 func declare_war(a: int, b: int) -> bool:
-	if not can_declare(a, b):
+	if not can_declare(a, b) or allied(a, b):
 		return false
 	at_war[_pair(a, b)] = true
 	war_since[_pair(a, b)] = day
+	# союзники вступают в войну на стороне своих
+	for side in [[a, b], [b, a]]:
+		var me: int = side[0]
+		var foe: int = side[1]
+		for m in alliance_members(int(alliance[me])):
+			var mi: int = m
+			if mi != me and mi != foe and not allied(mi, foe) and not is_at_war(mi, foe) and int(world.countries[mi]["tiles"]) > 0:
+				at_war[_pair(mi, foe)] = true
+				war_since[_pair(mi, foe)] = day
+				if foe == player or mi == player:
+					events.append("%s вступает в войну" % world.countries[mi]["name"])
 	return true
+
+
+# ---------- политика: очки, оправдание войны, альянсы ----------
+const POL_START := 60.0
+const POL_DAILY := 2.0
+const JUSTIFY_DAYS := 20
+const ALLY_COST := 10.0
+
+
+func allied(a: int, b: int) -> bool:
+	if a < 0 or b < 0 or a == b or a >= alliance.size() or b >= alliance.size():
+		return false
+	return int(alliance[a]) >= 0 and int(alliance[a]) == int(alliance[b])
+
+
+func alliance_members(aid: int) -> Array:
+	var out: Array = []
+	if aid < 0:
+		return out
+	for c in alliance.size():
+		if int(alliance[c]) == aid and int(world.countries[c]["tiles"]) > 0:
+			out.append(c)
+	return out
+
+
+func pol_cost_of_war(target: int) -> int:
+	if not war_cost.has(target):
+		war_cost[target] = rng.randi_range(30, 50)
+	return int(war_cost[target])
+
+
+## -1 — не оправдывалась, >0 — дней до разрешения, 0 — можно объявлять.
+func pol_justify_state(target: int) -> int:
+	if not justify.has(target):
+		return -1
+	return int(justify[target])
+
+
+func pol_justify_reason(cid: int, target: int) -> String:
+	if is_at_war(cid, target):
+		return "Уже идёт война"
+	if allied(cid, target):
+		return "Это союзник"
+	if justify.has(target):
+		return "Уже оправдывается"
+	if not can_declare(cid, target):
+		return "Недавно заключён мир"
+	if float(pol_points[cid]) < float(pol_cost_of_war(target)):
+		return "Не хватает очков"
+	return ""
+
+
+func pol_justify(cid: int, target: int) -> bool:
+	if pol_justify_reason(cid, target) != "":
+		return false
+	pol_points[cid] = float(pol_points[cid]) - float(pol_cost_of_war(target))
+	justify[target] = JUSTIFY_DAYS
+	return true
+
+
+## Игрок объявляет войну: только после оправдания.
+func player_declare_war(target: int) -> Dictionary:
+	if pol_justify_state(target) != 0:
+		return {"ok": false, "msg": "Сначала оправдайте войну"}
+	if not declare_war(player, target):
+		return {"ok": false, "msg": "Нельзя: недавно заключён мир"}
+	justify.erase(target)
+	war_cost.erase(target)
+	return {"ok": true, "msg": "Война объявлена"}
+
+
+func pol_alliance_reason(cid: int, target: int) -> String:
+	if allied(cid, target):
+		return "Уже союзники"
+	if is_at_war(cid, target):
+		return "Идёт война"
+	if float(pol_points[cid]) < ALLY_COST:
+		return "Не хватает очков"
+	var ac: int = alliance[cid]
+	var at: int = alliance[target]
+	if ac >= 0 and at >= 0:
+		return "Оба уже в альянсах"
+	if at >= 0:
+		for m in alliance_members(at):
+			if is_at_war(cid, int(m)):
+				return "Война с членом альянса"
+	if ac >= 0:
+		for m2 in alliance_members(ac):
+			if is_at_war(target, int(m2)):
+				return "Страна воюет с вашим союзником"
+	return ""
+
+
+## Создать альянс, вступить в чужой или пригласить страну в свой (10 очков).
+func pol_alliance(cid: int, target: int) -> bool:
+	if pol_alliance_reason(cid, target) != "":
+		return false
+	pol_points[cid] = float(pol_points[cid]) - ALLY_COST
+	var ac: int = alliance[cid]
+	var at: int = alliance[target]
+	if ac < 0 and at < 0:
+		alliance[cid] = _next_alliance
+		alliance[target] = _next_alliance
+		_next_alliance += 1
+	elif at >= 0:
+		alliance[cid] = at
+	else:
+		alliance[target] = ac
+	return true
+
+
+func pol_leave(cid: int) -> bool:
+	var aid: int = alliance[cid]
+	if aid < 0:
+		return false
+	var others: Array = []
+	for m in alliance_members(aid):
+		if int(m) != cid:
+			others.append(int(m))
+	alliance[cid] = -1
+	for o in others:
+		_evict_pair(cid, int(o))
+	if others.size() == 1:
+		alliance[int(others[0])] = -1   # в альянсе остался один — он распадается
+	_rebuild()
+	return true
+
+
+## Бывшие союзники: войска каждого, стоящие на земле другого, переезжают на ближайшие свободные свои плитки.
+func _evict_pair(a: int, b: int) -> void:
+	for sq in squads.duplicate():
+		var u: Dictionary = sq
+		var ow: int = u["owner"]
+		var host: int = world.tile_owner[int(u["tile"])]
+		if (ow == a and host == b) or (ow == b and host == a):
+			if int(u["state"]) == ST_FIGHT:
+				continue
+			_relocate_unit(u)
+
+
+func _relocate_unit(u: Dictionary) -> void:
+	var w = world
+	var start: int = u["tile"]
+	var ow: int = u["owner"]
+	var seen := {start: true}
+	var queue: Array = [start]
+	var qi := 0
+	var dest := -1
+	while qi < queue.size():
+		var cur: int = queue[qi]
+		qi += 1
+		if w.tile_owner[cur] == ow and not unit_on.has(cur):
+			dest = cur
+			break
+		for k in 6:
+			var nb: int = w.neighbor(cur, k)
+			if nb < 0 or seen.has(nb) or w.land[nb] == 0:
+				continue
+			seen[nb] = true
+			queue.append(nb)
+	if dest < 0:
+		return
+	unit_on.erase(start)
+	tile_army[start] = 0
+	u["tile"] = dest
+	u["from"] = dest
+	u["state"] = ST_IDLE
+	u["path"] = []
+	u["dest"] = -1
+	u["p"] = 0.0
+	u["crossed"] = false
+	unit_on[dest] = u
+	tile_army[dest] = 1
 
 
 func war_days(a: int, b: int) -> int:
@@ -651,7 +865,16 @@ func can_enter(cid: int, t: int) -> bool:
 	if t < 0 or world.land[t] == 0:
 		return false
 	var o: int = world.tile_owner[t]
-	return o == cid or (o >= 0 and is_at_war(cid, o))
+	return o == cid or (o >= 0 and (is_at_war(cid, o) or allied(cid, o)))
+
+
+## С союзной территории можно атаковать только тех, с кем воюет и хозяин этой территории.
+func _edge_ok(cid: int, a: int, b: int) -> bool:
+	var ao: int = world.tile_owner[a]
+	if ao == cid or ao < 0 or not allied(cid, ao):
+		return true
+	var bo: int = world.tile_owner[b]
+	return bo == ao or bo == cid or allied(cid, bo) or is_at_war(ao, bo)
 
 
 ## Кратчайший маршрут (плитки без стартовой); пусто = пути нет. Свои дивизии на пути обходятся.
@@ -669,9 +892,9 @@ func find_path(cid: int, from: int, to: int) -> Array:
 			break
 		for k in 6:
 			var nb := world.neighbor(cur, k)
-			if nb < 0 or prev.has(nb) or not can_enter(cid, nb):
+			if nb < 0 or prev.has(nb) or not can_enter(cid, nb) or not _edge_ok(cid, cur, nb):
 				continue
-			if unit_on.has(nb) and world.tile_owner[nb] == cid:
+			if unit_on.has(nb) and not is_at_war(cid, int(Dictionary(unit_on[nb])["owner"])):
 				continue   # своя дивизия занимает плитку: обходим
 			prev[nb] = cur
 			queue.append(nb)
@@ -690,7 +913,7 @@ func order_move(cid: int, from: int, to: int) -> Dictionary:
 	if to < 0 or world.land[to] == 0:
 		return {"ok": false, "msg": "Туда нельзя"}
 	var owner_to: int = world.tile_owner[to]
-	if owner_to != cid and not is_at_war(cid, owner_to):
+	if owner_to != cid and not is_at_war(cid, owner_to) and not allied(cid, owner_to):
 		return {"ok": false, "msg": "Нужна война: нажмите на чужую плитку и «Объявить войну»"}
 	if from == to:
 		return {"ok": false, "msg": "Это та же плитка"}
@@ -699,7 +922,7 @@ func order_move(cid: int, from: int, to: int) -> Dictionary:
 		return {"ok": false, "msg": "Тут нет вашей дивизии"}
 	if int(e["state"]) != ST_IDLE or int(e["recover"]) > 0:
 		return {"ok": false, "msg": "Дивизия отдыхает или уже в походе"}
-	if owner_to == cid and unit_on.has(to):
+	if unit_on.has(to) and not is_at_war(cid, int(Dictionary(unit_on[to])["owner"])):
 		return {"ok": false, "msg": "Эта плитка занята вашей дивизией"}
 	var path := find_path(cid, from, to)
 	if path.is_empty():
@@ -760,13 +983,13 @@ func _advance_move(e: Dictionary, dt: float) -> void:
 		return
 	var cid: int = e["owner"]
 	var nxt: int = path[0]
-	if not can_enter(cid, nxt):
+	if not can_enter(cid, nxt) or not _edge_ok(cid, int(e["tile"]), nxt):
 		_stop(e)
 		return
 	# на следующей плитке стоит своя дивизия: не наслаиваемся — ждём, если она уходит, иначе останавливаемся
 	if unit_on.has(nxt):
 		var occ: Dictionary = unit_on[nxt]
-		if int(occ["owner"]) == cid:
+		if not is_at_war(cid, int(occ["owner"])):
 			if int(occ["state"]) == ST_MOVE and float(e["wait_t"]) < WAIT_REROUTE:
 				e["wait_t"] = float(e["wait_t"]) + dt
 				if float(e["p"]) > 0.4:
@@ -774,7 +997,7 @@ func _advance_move(e: Dictionary, dt: float) -> void:
 			else:
 				_stop(e)
 			return
-	var hostile: bool = world.tile_owner[nxt] != cid and not bool(e["crossed"])
+	var hostile: bool = is_at_war(cid, int(world.tile_owner[nxt])) and not bool(e["crossed"])
 	var p: float = float(e["p"]) + dt / STEP_SECONDS
 	if hostile and p >= 0.5 and unit_on.has(nxt):
 		e["p"] = 0.5
@@ -789,7 +1012,7 @@ func _advance_move(e: Dictionary, dt: float) -> void:
 		return
 	# плитка меняет цвет только теперь, когда солдат дошёл до её центра
 	var ow: int = world.tile_owner[nxt]
-	if ow != cid and ow >= 0:
+	if ow != cid and ow >= 0 and is_at_war(cid, ow):
 		var was_battle: bool = bool(e["crossed"])
 		_capture(cid, ow, nxt)
 		if was_battle:
@@ -847,7 +1070,7 @@ func _join_battle(e: Dictionary, target: int) -> void:
 		if nb < 0 or not unit_on.has(nb):
 			continue
 		var u: Dictionary = unit_on[nb]
-		if int(u["owner"]) == int(d["owner"]) and int(u["state"]) == ST_IDLE and int(u["recover"]) <= 0:
+		if int(u["owner"]) == int(d["owner"]) and int(u["state"]) == ST_IDLE and int(u["recover"]) <= 0 and is_adjacent(nb, int(e["tile"])):
 			u["pre"] = ST_IDLE
 			u["state"] = ST_FIGHT
 			defs.append(u)
@@ -1036,6 +1259,8 @@ func _annex(att: int, def: int) -> void:
 	da["factories"] = int(da["factories"]) + int(dd["factories"])
 	da["cities"] = int(da["cities"]) + int(dd["cities"])
 	population[att] = float(population[att]) + float(population[def])
+	alliance[def] = -1
+	justify.erase(def)
 	var cap: int = dd["capital"]
 	world.tile_city[cap] = 1   # бывшая столица — обычный город, звезда одна
 	dd["tiles"] = 0
