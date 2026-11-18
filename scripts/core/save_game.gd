@@ -38,6 +38,9 @@ static func save(world, state, seed_value: int) -> bool:
 	var truce: Array = []
 	for k in state.truce.keys():
 		truce.append([int(k), int(state.truce[k])])
+	var bj: Array = []
+	for k in state.bot_just.keys():
+		bj.append([int(k), int(state.bot_just[k])])
 	var jf: Array = []
 	for k in state.justify.keys():
 		jf.append([int(k), int(state.justify[k])])
@@ -51,8 +54,9 @@ static func save(world, state, seed_value: int) -> bool:
 		"next_group": state._next_group,
 		"justify": jf,
 		"war_cost": wc,
-		"alliance": state.alliance,
-		"next_alliance": state._next_alliance,
+		"ally": state.ally_pairs.keys(),
+		"bot_just": bj,
+		"upg": state.upg,
 		"v": VERSION,
 		"seed": seed_value,
 		"day": state.day,
@@ -170,13 +174,24 @@ static func load_into(world, state) -> bool:
 	state.recruit_queue = rq
 	var n_c: int = world.countries.size()
 	state.pol_points = []
-	state.alliance = []
+	state.ally_pairs = {}
+	for ap in d.get("ally", []):
+		state.ally_pairs[int(ap)] = true
+	state.bot_just = {}
+	for bp in d.get("bot_just", []):
+		state.bot_just[int(bp[0])] = int(bp[1])
+	var ul: Array = d.get("upg", [])
+	state.upg = []
+	for c4 in n_c:
+		var row: Array = [0, 0, 0]
+		if c4 < ul.size():
+			var src: Array = ul[c4]
+			for q in 3:
+				row[q] = int(src[q])
+		state.upg.append(row)
 	var pl: Array = d.get("pol", [])
-	var al: Array = d.get("alliance", [])
 	for c in n_c:
 		state.pol_points.append(float(pl[c]) if c < pl.size() else 60.0)
-		state.alliance.append(int(al[c]) if c < al.size() else -1)
-	state._next_alliance = int(d.get("next_alliance", 1))
 	state.groups = []
 	for gg in d.get("groups", []):
 		var gd2: Dictionary = gg

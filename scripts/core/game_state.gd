@@ -72,8 +72,9 @@ var army_total: Array = []      # сколько дивизий страна п�
 var pol_points: Array = []      # политические очки стран
 var justify: Dictionary = {}    # цель -> дней до разрешения войны (0 = можно), только для игрока
 var war_cost: Dictionary = {}   # цель -> цена оправдания войны (случайно 30-50)
-var alliance: Array = []        # номер альянса страны или -1
-var _next_alliance: int = 1
+var ally_pairs: Dictionary = {} # пары союзников (ключ пары -> true)
+var bot_just: Dictionary = {}   # бот*1000+цель -> дней до разрешения войны
+var upg: Array = []             # улучшения стран: [оружие, дома, механизация]
 var recruit_queue: Array = []   # покупки дивизий в процессе: {cid, t}
 var population: Array = []    # население каждой страны (float)
 var army: Array = []          # дивизий у каждой страны (int), всегда = сумма по плиткам
@@ -123,8 +124,9 @@ func reset() -> void:
 	pol_points = []
 	justify = {}
 	war_cost = {}
-	alliance = []
-	_next_alliance = 1
+	ally_pairs = {}
+	bot_just = {}
+	upg = []
 	events = []
 	sounds = []
 	battles = []
@@ -136,7 +138,7 @@ func reset() -> void:
 		population.append(START_POP)
 		pol_points.append(POL_START)
 		army_total.append(0)
-		alliance.append(-1)
+		upg.append([0, 0, 0])
 		army.append(maxi(1, int(round(float(cn["tiles"]) / ARMY_TILES_PER_DIVISION))))
 		money.append(0.0)
 	rng.seed = 424242
@@ -302,7 +304,7 @@ func tick_day() -> void:
 	for cid in world.countries.size():
 		money[cid] = float(money[cid]) + daily_net(cid)
 		if int(world.countries[cid]["tiles"]) > 0:
-			population[cid] = float(population[cid]) + POP_GROWTH_FLAT
+			population[cid] = float(population[cid]) + pop_growth_day(cid)
 			pol_points[cid] = float(pol_points[cid]) + POL_DAILY
 		equipment[cid] = float(equipment[cid]) + equip_per_day(cid)
 		_progress_research(cid)
@@ -324,9 +326,11 @@ func tick_day() -> void:
 			continue   # окружена: нет пути к столице или прибрежному городу — не лечится
 		if int(e["recover"]) > 0:
 			e["recover"] = int(e["recover"]) - 1
-		e["hp"] = minf(MAX_HP, float(e["hp"]) + HEAL_PER_DAY)
+		e["hp"] = minf(MAX_HP, float(e["hp"]) + heal_per_day(int(e["owner"])))
 	for k in justify.keys():
 		justify[k] = maxi(0, int(justify[k]) - 1)
+	for k2 in bot_just.keys():
+		bot_just[k2] = maxi(0, int(bot_just[k2]) - 1)
 	_progress_builds()
 	for cid in world.countries.size():
 		if cid != player and (day + cid) % bot_period() == 0:
@@ -453,6 +457,80 @@ const BUY_BASE := 2000.0
 const BUY_STEP := 300.0
 const BUY_POP := 10000.0
 const BUY_SECONDS := 10.0
+
+
+# ---------- улучшения (меню «Исследования») ----------
+const UPG_COST: Array = [[20000.0, 35000.0, 50000.0], [35000.0, 45000.0, 65000.0], [25000.0, 45000.0, 75000.0]]
+const UPG_NAMES: Array = ["Новое оружие", "Жилые дома", "Механизация"]
+const HOUSE_DAILY: Array = [100.0, 200.0, 300.0]
+const MECH_BONUS: Array = [0.10, 0.20, 0.30]
+
+
+func upg_level(cid: int, k: int) -> int:
+	return int(Array(upg[cid])[k])
+
+
+func upg_reason(cid: int, k: int) -> String:
+	var lv := upg_level(cid, k)
+	if lv >= 3:
+		return "Куплено"
+	if float(money[cid]) < float(Array(UPG_COST[k])[lv]):
+		return "Не хватает денег"
+	return ""
+
+
+func upg_buy(cid: int, k: int) -> bool:
+	if upg_reason(cid, k) != "":
+		return false
+	var lv := upg_level(cid, k)
+	money[cid] = float(money[cid]) - float(Array(UPG_COST[k])[lv])
+	if k == 1:
+		if lv == 0:
+			population[cid] = float(population[cid]) + 3000.0
+		elif lv == 1:
+			population[cid] = float(population[cid]) * 1.10
+		else:
+			population[cid] = float(population[cid]) * 1.15
+	var ul: Array = upg[cid]
+	ul[k] = lv + 1
+	return true
+
+
+func pop_growth_day(cid: int) -> float:
+	var g := POP_GROWTH_FLAT
+	for i in upg_level(cid, 1):
+		g += float(HOUSE_DAILY[i])
+	return g
+
+
+func heal_per_day(cid: int) -> float:
+	var lv := upg_level(cid, 2)
+	return HEAL_PER_DAY * (1.0 + (float(MECH_BONUS[lv - 1]) if lv > 0 else 0.0))
+
+
+func inf_speed(cid: int) -> float:
+	return pow(1.1, float(upg_level(cid, 0)))
+
+
+## Купить корабль из меню: он появляется в порту, ближайшем к столице.
+func navy_buy_at_capital(cid: int, ship_type: int) -> Dictionary:
+	var cap: int = world.countries[cid]["capital"]
+	var cc: Vector2 = world.center_of(cap)
+	var best := -1
+	var best_d := 0.0
+	for i in world.tile_total():
+		if world.land[i] == 1 and world.tile_owner[i] == cid and world.tile_port[i] == 1 and world.tile_sea[i] >= 0:
+			var d: float = cc.distance_squared_to(world.center_of(i))
+			if best < 0 or d < best_d:
+				best = i
+				best_d = d
+	if best < 0:
+		return {"ok": false, "msg": "Сначала постройте порт"}
+	var why := navy_ship_block_reason(cid, best, ship_type)
+	if why != "":
+		return {"ok": false, "msg": why}
+	navy_build_ship(cid, best, ship_type)
+	return {"ok": true, "msg": "Корабль куплен"}
 
 
 func army_queued(cid: int) -> int:
@@ -875,7 +953,7 @@ func declare_war(a: int, b: int) -> bool:
 	for side in [[a, b], [b, a]]:
 		var me: int = side[0]
 		var foe: int = side[1]
-		for m in alliance_members(int(alliance[me])):
+		for m in allies_of(me):
 			var mi: int = m
 			if mi != me and mi != foe and not allied(mi, foe) and not is_at_war(mi, foe) and int(world.countries[mi]["tiles"]) > 0:
 				at_war[_pair(mi, foe)] = true
@@ -893,18 +971,22 @@ const ALLY_COST := 10.0
 
 
 func allied(a: int, b: int) -> bool:
-	if a < 0 or b < 0 or a == b or a >= alliance.size() or b >= alliance.size():
-		return false
-	return int(alliance[a]) >= 0 and int(alliance[a]) == int(alliance[b])
+	return a >= 0 and b >= 0 and a != b and ally_pairs.has(_pair(a, b))
 
 
-func alliance_members(aid: int) -> Array:
+func allies_of(c: int) -> Array:
 	var out: Array = []
-	if aid < 0:
-		return out
-	for c in alliance.size():
-		if int(alliance[c]) == aid and int(world.countries[c]["tiles"]) > 0:
-			out.append(c)
+	for k in ally_pairs.keys():
+		var ki: int = k
+		var lo: int = floori(float(ki) / 1000.0)
+		var hi: int = ki % 1000
+		var other := -1
+		if lo == c:
+			other = hi
+		elif hi == c:
+			other = lo
+		if other >= 0 and int(world.countries[other]["tiles"]) > 0:
+			out.append(other)
 	return out
 
 
@@ -915,6 +997,20 @@ func pol_cost_of_war(target: int) -> int:
 
 
 ## -1 — не оправдывалась, >0 — дней до разрешения, 0 — можно объявлять.
+func bot_war_gate(cid: int, target: int) -> bool:
+	var key := cid * 1000 + target
+	if bot_just.has(key):
+		if int(bot_just[key]) <= 0:
+			bot_just.erase(key)
+			return true
+		return false
+	var cost := float(pol_cost_of_war(target))
+	if float(pol_points[cid]) >= cost:
+		pol_points[cid] = float(pol_points[cid]) - cost
+		bot_just[key] = JUSTIFY_DAYS
+	return false
+
+
 func pol_justify_state(target: int) -> int:
 	if not justify.has(target):
 		return -1
@@ -961,52 +1057,42 @@ func pol_alliance_reason(cid: int, target: int) -> String:
 		return "Идёт война"
 	if float(pol_points[cid]) < ALLY_COST:
 		return "Не хватает очков"
-	var ac: int = alliance[cid]
-	var at: int = alliance[target]
-	if ac >= 0 and at >= 0:
-		return "Оба уже в альянсах"
-	if at >= 0:
-		for m in alliance_members(at):
-			if is_at_war(cid, int(m)):
-				return "Война с членом альянса"
-	if ac >= 0:
-		for m2 in alliance_members(ac):
-			if is_at_war(target, int(m2)):
-				return "Страна воюет с вашим союзником"
+	for m in allies_of(target):
+		if is_at_war(cid, int(m)):
+			return "Война с союзником этой страны"
+	for m2 in allies_of(cid):
+		if is_at_war(target, int(m2)):
+			return "Страна воюет с вашим союзником"
 	return ""
 
 
-## Создать альянс, вступить в чужой или пригласить страну в свой (10 очков).
+## Заключить альянс (10 очков). Если у страны уже есть союзники, вы становитесь союзником и им.
 func pol_alliance(cid: int, target: int) -> bool:
 	if pol_alliance_reason(cid, target) != "":
 		return false
 	pol_points[cid] = float(pol_points[cid]) - ALLY_COST
-	var ac: int = alliance[cid]
-	var at: int = alliance[target]
-	if ac < 0 and at < 0:
-		alliance[cid] = _next_alliance
-		alliance[target] = _next_alliance
-		_next_alliance += 1
-	elif at >= 0:
-		alliance[cid] = at
-	else:
-		alliance[target] = ac
+	var grp: Array = [cid, target]
+	for m in allies_of(target):
+		if not grp.has(int(m)):
+			grp.append(int(m))
+	for m2 in allies_of(cid):
+		if not grp.has(int(m2)):
+			grp.append(int(m2))
+	for i in grp.size():
+		for j in range(i + 1, grp.size()):
+			var x: int = grp[i]
+			var y: int = grp[j]
+			if not is_at_war(x, y):
+				ally_pairs[_pair(x, y)] = true
 	return true
 
 
-func pol_leave(cid: int) -> bool:
-	var aid: int = alliance[cid]
-	if aid < 0:
+## Выйти из союза с одной страной (с остальными союзниками союз сохраняется).
+func pol_leave_with(cid: int, other: int) -> bool:
+	if not allied(cid, other):
 		return false
-	var others: Array = []
-	for m in alliance_members(aid):
-		if int(m) != cid:
-			others.append(int(m))
-	alliance[cid] = -1
-	for o in others:
-		_evict_pair(cid, int(o))
-	if others.size() == 1:
-		alliance[int(others[0])] = -1   # в альянсе остался один — он распадается
+	ally_pairs.erase(_pair(cid, other))
+	_evict_pair(cid, other)
 	_rebuild()
 	return true
 
@@ -1225,7 +1311,7 @@ func _advance_move(e: Dictionary, dt: float) -> void:
 				_stop(e)
 			return
 	var hostile: bool = is_at_war(cid, int(world.tile_owner[nxt])) and not bool(e["crossed"])
-	var p: float = float(e["p"]) + dt / STEP_SECONDS
+	var p: float = float(e["p"]) + dt * inf_speed(cid) / STEP_SECONDS
 	if hostile and p >= 0.5 and unit_on.has(nxt):
 		e["p"] = 0.5
 		_join_battle(e, nxt)
@@ -1310,7 +1396,7 @@ func _join_battle(e: Dictionary, target: int) -> void:
 
 
 func _unit_dps(u: Dictionary) -> float:
-	var k := 1.0 + float(TECH_BONUS[0]) * float(tech_level(int(u["owner"]), 0))
+	var k := pow(1.5, float(upg_level(int(u["owner"]), 0)))
 	return BATTLE_DPS * (0.5 + 0.5 * float(u["hp"]) / MAX_HP) * k
 
 
@@ -1486,7 +1572,10 @@ func _annex(att: int, def: int) -> void:
 	da["factories"] = int(da["factories"]) + int(dd["factories"])
 	da["cities"] = int(da["cities"]) + int(dd["cities"])
 	population[att] = float(population[att]) + float(population[def])
-	alliance[def] = -1
+	for k in ally_pairs.keys():
+		var ki2: int = k
+		if floori(float(ki2) / 1000.0) == def or ki2 % 1000 == def:
+			ally_pairs.erase(k)
 	justify.erase(def)
 	var cap: int = dd["capital"]
 	world.tile_city[cap] = 1   # бывшая столица — обычный город, звезда одна
@@ -2046,6 +2135,7 @@ func navy_order_ship(cid: int, ship: Dictionary, dest_cell: int, land_tile: int,
 
 
 func navy_advance(dt: float) -> void:
+	_navy_hunt()
 	for s in ships:
 		var sh: Dictionary = s
 		if int(sh["bomb"]) >= 0:
@@ -2065,6 +2155,46 @@ func navy_advance(dt: float) -> void:
 			sh["p"] = 0.0
 			if path.is_empty():
 				navy_arrive(sh)
+
+
+func _ship_pos(sh: Dictionary) -> Vector2:
+	var a: Vector2 = world.center_of(int(sh["cell"]))
+	var path: Array = sh["path"]
+	if int(sh["state"]) == 1 and not path.is_empty():
+		return a.lerp(world.center_of(int(path[0])), clampf(float(sh["p"]), 0.0, 1.0))
+	return a
+
+
+## Боевой корабль топит вражеский десантный при встрече.
+func _navy_hunt() -> void:
+	var tsz: float = world.center_of(0).distance_to(world.center_of(1))
+	var dead: Array = []
+	for w in ships:
+		var wd: Dictionary = w
+		if int(wd["type"]) != 1 or int(wd["dock"]) >= 0:
+			continue
+		var wp := _ship_pos(wd)
+		for l in ships:
+			var ld: Dictionary = l
+			if int(ld["type"]) != 0 or int(ld["dock"]) >= 0 or dead.has(ld):
+				continue
+			if not is_at_war(int(wd["owner"]), int(ld["owner"])):
+				continue
+			if wp.distance_to(_ship_pos(ld)) < tsz * 0.55:
+				dead.append(ld)
+	for x in dead:
+		var xd: Dictionary = x
+		ships.erase(xd)
+		if int(xd["owner"]) == player:
+			events.append("Ваш десантный корабль потоплен")
+			sounds.append("alert")
+		else:
+			var hunter_owner := -1
+			for w2 in ships:
+				if int(Dictionary(w2)["owner"]) == player and int(Dictionary(w2)["type"]) == 1:
+					hunter_owner = player
+			if hunter_owner == player and is_at_war(player, int(xd["owner"])):
+				events.append("Вражеский десантный корабль потоплен")
 
 
 func navy_bomb_step(sh: Dictionary, dt: float) -> void:

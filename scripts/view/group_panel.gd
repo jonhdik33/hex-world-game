@@ -8,7 +8,7 @@ signal order_pressed(kind: String)
 signal closed
 
 const GS = preload("res://scripts/core/game_state.gd")
-const FONT := 20
+const FONT := 15
 
 var selected_id: int = -1
 var _sig := ""
@@ -21,10 +21,10 @@ func _init() -> void:
 	sb.border_color = Color(0.35, 0.5, 0.75, 1.0)
 	sb.set_border_width_all(2)
 	sb.set_corner_radius_all(10)
-	sb.set_content_margin_all(8.0)
+	sb.set_content_margin_all(6.0)
 	add_theme_stylebox_override("panel", sb)
 	_body = VBoxContainer.new()
-	_body.add_theme_constant_override("separation", 6)
+	_body.add_theme_constant_override("separation", 4)
 	add_child(_body)
 
 
@@ -41,7 +41,7 @@ func _color_box(col: Color, border: bool) -> StyleBoxFlat:
 	var sb := StyleBoxFlat.new()
 	sb.bg_color = col
 	sb.set_corner_radius_all(6)
-	sb.set_content_margin_all(6.0)
+	sb.set_content_margin_all(2.0)
 	if border:
 		sb.border_color = Color(1, 1, 1)
 		sb.set_border_width_all(4)
@@ -78,7 +78,7 @@ func update_view(st: GS, cid: int) -> void:
 	top.add_theme_constant_override("separation", 14)
 	_body.add_child(top)
 	var title := Label.new()
-	title.add_theme_font_size_override("font_size", 24)
+	title.add_theme_font_size_override("font_size", 18)
 	if g.is_empty():
 		title.text = "Нет военных групп — нажмите «+»"
 	else:
@@ -87,10 +87,10 @@ func update_view(st: GS, cid: int) -> void:
 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	top.add_child(title)
 	var cnt := Label.new()
-	cnt.add_theme_font_size_override("font_size", 22)
+	cnt.add_theme_font_size_override("font_size", 17)
 	cnt.text = "Солдаты: %d" % (g["units"].size() if not g.is_empty() else 0)
 	top.add_child(cnt)
-	top.add_child(_btn("X", Vector2(52, 44), func(): closed.emit()))
+	top.add_child(_btn("X", Vector2(40, 33), func(): closed.emit()))
 	# страны-цели
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 8)
@@ -102,12 +102,12 @@ func update_view(st: GS, cid: int) -> void:
 	for c in neigh:
 		var ci: int = c
 		var cn: Dictionary = st.world.countries[ci]
-		var b := _btn(String(cn["name"]), Vector2(0, 48), _on_target.bind(ci))
+		var b := _btn(String(cn["name"]), Vector2(0, 36), _on_target.bind(ci))
 		var chosen: bool = not g.is_empty() and int(g["target"]) == ci
 		var col: Color = cn["color"]
 		for sn in ["normal", "hover", "pressed", "focus"]:
 			b.add_theme_stylebox_override(sn, _color_box(col.darkened(0.2), chosen))
-		b.add_theme_font_size_override("font_size", 18)
+		b.add_theme_font_size_override("font_size", 14)
 		row.add_child(b)
 	# низ: приказы слева, группы справа
 	var low := HBoxContainer.new()
@@ -116,17 +116,17 @@ func update_view(st: GS, cid: int) -> void:
 	var ords := VBoxContainer.new()
 	low.add_child(ords)
 	var cur: int = g["order"] if not g.is_empty() else 0
-	var ba := _btn("Атака", Vector2(190, 44), func(): order_pressed.emit("attack"))
+	var ba := _btn("Атака", Vector2(143, 33), func(): order_pressed.emit("attack"))
 	ba.disabled = g.is_empty()
 	if cur == GS.G_ATTACK:
 		ba.add_theme_stylebox_override("normal", _color_box(Color(0.7, 0.25, 0.2), true))
 	ords.add_child(ba)
-	var bd := _btn("Защитить", Vector2(190, 44), func(): order_pressed.emit("defend"))
+	var bd := _btn("Защитить", Vector2(143, 33), func(): order_pressed.emit("defend"))
 	bd.disabled = g.is_empty()
 	if cur == GS.G_DEFEND:
 		bd.add_theme_stylebox_override("normal", _color_box(Color(0.2, 0.4, 0.75), true))
 	ords.add_child(bd)
-	var br := _btn("Расформировать", Vector2(190, 44), func(): order_pressed.emit("disband"))
+	var br := _btn("Расформировать", Vector2(143, 33), func(): order_pressed.emit("disband"))
 	br.disabled = g.is_empty()
 	ords.add_child(br)
 	var grp := HBoxContainer.new()
@@ -137,16 +137,17 @@ func update_view(st: GS, cid: int) -> void:
 	var icon := load("res://assets/icons/soldier.svg") as Texture2D
 	for gg2 in st.groups:
 		var gd: Dictionary = gg2
-		var gb := _btn("", Vector2(84, 84), _on_group.bind(int(gd["id"])))
+		var gb := _btn("", Vector2(63, 63), _on_group.bind(int(gd["id"])))
 		var sel: bool = int(gd["id"]) == selected_id
 		for sn2 in ["normal", "hover", "pressed", "focus"]:
 			gb.add_theme_stylebox_override(sn2, _color_box(st.group_color(gd).darkened(0.35), sel))
 		if icon != null:
 			gb.icon = icon
 			gb.expand_icon = true
+			gb.icon_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		grp.add_child(gb)
 	if st.groups.size() < GS.GROUP_COLORS.size():
-		grp.add_child(_btn("+", Vector2(84, 84), func(): group_add.emit()))
+		grp.add_child(_btn("+", Vector2(63, 63), func(): group_add.emit()))
 
 
 func _on_target(cid: int) -> void:

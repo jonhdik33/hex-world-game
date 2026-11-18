@@ -1,14 +1,15 @@
 extends VBoxContainer
 ## Меню «Политика»: очки, оправдание войн, альянс.
 
-signal leave_pressed
+signal leave_pressed(other: int)
 
 const GS = preload("res://scripts/core/game_state.gd")
 
 var _pts: Label
 var _ally: Label
 var _wars: Label
-var _leave: Button
+var _leave_box: VBoxContainer
+var _sig := ""
 
 
 func _init() -> void:
@@ -22,11 +23,8 @@ func _init() -> void:
 	_pts = _lbl()
 	_ally = _lbl()
 	_wars = _lbl()
-	_leave = Button.new()
-	_leave.text = "Покинуть альянс"
-	_leave.add_theme_font_size_override("font_size", 22)
-	_leave.pressed.connect(func(): leave_pressed.emit())
-	add_child(_leave)
+	_leave_box = VBoxContainer.new()
+	add_child(_leave_box)
 	var hint := _lbl()
 	hint.text = "Оправдать войну, создать альянс или вступить в него можно, нажав на чужую страну на карте."
 	hint.add_theme_font_size_override("font_size", 18)
@@ -44,16 +42,22 @@ func _lbl() -> Label:
 
 func update_view(st: GS, cid: int) -> void:
 	_pts.text = "Очки: %d  (+%d в день)" % [int(st.pol_points[cid]), int(GS.POL_DAILY)]
-	var aid: int = st.alliance[cid]
-	if aid < 0:
-		_ally.text = "Альянс: нет"
-		_leave.visible = false
-	else:
-		var names: Array = []
-		for m in st.alliance_members(aid):
-			names.append(String(st.world.countries[int(m)]["name"]))
-		_ally.text = "Альянс: " + ", ".join(names)
-		_leave.visible = true
+	var al: Array = st.allies_of(cid)
+	var names: Array = []
+	for m in al:
+		names.append(String(st.world.countries[int(m)]["name"]))
+	_ally.text = "Союзники: " + (", ".join(names) if not names.is_empty() else "нет")
+	var sig := str(al)
+	if sig != _sig:
+		_sig = sig
+		for c in _leave_box.get_children():
+			c.queue_free()
+		for m2 in al:
+			var b := Button.new()
+			b.text = "Выйти из союза: %s" % String(st.world.countries[int(m2)]["name"])
+			b.add_theme_font_size_override("font_size", 20)
+			b.pressed.connect(_on_leave.bind(int(m2)))
+			_leave_box.add_child(b)
 	var lines: Array = []
 	for k in st.justify.keys():
 		var left: int = st.justify[k]
@@ -63,3 +67,7 @@ func update_view(st: GS, cid: int) -> void:
 		else:
 			lines.append("Войну с %s можно объявлять" % nm)
 	_wars.text = "\n".join(lines)
+
+
+func _on_leave(other: int) -> void:
+	leave_pressed.emit(other)

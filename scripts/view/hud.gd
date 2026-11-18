@@ -28,6 +28,7 @@ const PortPanel = preload("res://scripts/view/port_panel.gd")
 const ArmyPanel = preload("res://scripts/view/army_panel.gd")
 const PolPanel = preload("res://scripts/view/pol_panel.gd")
 const GroupPanel = preload("res://scripts/view/group_panel.gd")
+const UpgradePanel = preload("res://scripts/view/upgrade_panel.gd")
 const ICON_DIR := "res://assets/icons/"
 
 var _top_bar: PanelContainer
@@ -67,6 +68,7 @@ var army_panel: ArmyPanel
 var pol_panel: PolPanel
 var _lbl_pol: Label
 var group_panel: GroupPanel
+var upgrade_panel: UpgradePanel
 var _group_btn: Button
 signal group_button_pressed
 var _pop_label: Label
@@ -163,8 +165,8 @@ func _build() -> void:
 	group_panel.anchor_top = 1.0
 	group_panel.anchor_bottom = 1.0
 	group_panel.offset_bottom = -8.0
-	group_panel.offset_left = -330.0
-	group_panel.offset_right = 380.0
+	group_panel.offset_left = -250.0
+	group_panel.offset_right = 290.0
 	group_panel.grow_vertical = Control.GROW_DIRECTION_BEGIN
 	group_panel.visible = false
 	group_panel.closed.connect(func(): group_panel.visible = false)
@@ -174,9 +176,9 @@ func _build() -> void:
 	_group_btn.anchor_right = 0.5
 	_group_btn.anchor_top = 1.0
 	_group_btn.anchor_bottom = 1.0
-	_group_btn.offset_left = -36.0
-	_group_btn.offset_right = 36.0
-	_group_btn.offset_top = -80.0
+	_group_btn.offset_left = -30.0
+	_group_btn.offset_right = 30.0
+	_group_btn.offset_top = -68.0
 	_group_btn.offset_bottom = -8.0
 	_group_btn.tooltip_text = "Военные группы"
 	var gtex := load("res://assets/icons/soldier.svg") as Texture2D
@@ -348,20 +350,17 @@ func _build_menu() -> void:
 	var p2: PanelContainer = _menu_panels[2]
 	p2.add_child(pbox)
 
-	# 3 Наука
-	var rbox := VBoxContainer.new()
-	_res_label = _plain_label("", Color(0.92, 0.95, 1.0))
-	_res_label.custom_minimum_size = Vector2(420, 0)
-	rbox.add_child(_res_label)
-	for n in 3:
-		var rb := Button.new()
-		rb.add_theme_font_size_override("font_size", FONT)
-		rb.pressed.connect(func(): research_pressed.emit(n))
-		rbox.add_child(rb)
-		_res_btns.append(rb)
+	# 3 Исследования (улучшения): большое окно
+	upgrade_panel = UpgradePanel.new()
 	var p3: PanelContainer = _menu_panels[3]
-	p3.add_child(rbox)
-
+	p3.add_child(upgrade_panel)
+	p3.anchor_left = 0.04
+	p3.anchor_right = 1.0
+	p3.offset_left = 0.0
+	p3.offset_right = -84.0
+	p3.offset_top = 56.0
+	p3.anchor_bottom = 1.0
+	p3.offset_bottom = -12.0
 
 	# 4 Настройки
 	var sbox := VBoxContainer.new()
@@ -599,16 +598,6 @@ func set_production(percent: int, text: String) -> void:
 
 
 ## Окно науки: status — текст, list — три кнопки {text, enabled}.
-func set_research(status: String, list: Array) -> void:
-	_res_label.text = status
-	for n in _res_btns.size():
-		var b: Button = _res_btns[n]
-		if n < list.size():
-			var d: Dictionary = list[n]
-			b.text = d["text"]
-			b.disabled = not bool(d["enabled"])
-
-
 func show_result(title: String, text: String) -> void:
 	_result_title.text = title
 	_result_text.text = text

@@ -19,6 +19,7 @@ static func think(st, cid: int, aggr: float, active: bool) -> void:
 		if world.land[i] == 1 and world.tile_owner[i] == cid:
 			own.append(i)
 	_economy(st, cid, own)
+	_politics(st, cid)
 	if not active:
 		return   # неактивные боты только развиваются
 	_war(st, cid, own, aggr)
@@ -44,19 +45,11 @@ static func _economy(st, cid: int, own: Array) -> void:
 		if best >= 0 and money - best_cost > BUILD_RESERVE:
 			st.start_build(cid, best)
 			money -= best_cost
-	# наука: берём самую слабую ветку, если денег с запасом
-	var cur: Dictionary = st.research[cid]
-	if cur.is_empty():
-		var br := -1
-		var lvl_best := 99
-		for b in 3:
-			var lv: int = st.tech_level(cid, b)
-			if lv < lvl_best and st.research_block_reason(cid, b) == "":
-				br = b
-				lvl_best = lv
-		if br >= 0 and money > st.tech_cost(lvl_best) + 6000.0:
-			st.start_research(cid, br)
-			money -= st.tech_cost(lvl_best)
+	# улучшения: покупаем следующий уровень, если денег с запасом
+	var uk: int = st.rng.randi_range(0, 2)
+	if st.upg_reason(cid, uk) == "" and money > float(Array(st.UPG_COST[uk])[st.upg_level(cid, uk)]) + 8000.0:
+		st.upg_buy(cid, uk)
+		money = st.money[cid]
 	# найм: только если казна выдержит содержание
 	var army: int = st.army[cid]
 	if net > st.division_upkeep() * 3.0 and money > RECRUIT_RESERVE and army < int(own.size() / 2):
@@ -115,6 +108,8 @@ static func _war(st, cid: int, own: Array, aggr: float) -> void:
 			target_army = a
 	if target < 0:
 		return
+	if st.allied(cid, target) or not st.bot_war_gate(cid, target):
+		return   # сначала оправдание войны (очки и 20 дней), как у игрока
 	if not st.declare_war(cid, target):
 		return
 	if target == st.player:
@@ -322,3 +317,22 @@ static func _nearest_tile(st, cell: int, tiles: Array) -> int:
 			best = ti
 			best_d = d
 	return best
+
+
+## Политика ботов: заключают и разрывают альянсы между собой.
+static func _politics(st, cid: int) -> void:
+	var r: float = st.rng.randf()
+	if r < 0.06:
+		var cand: Array = []
+		for o in st.world.countries.size():
+			if o != cid and o != st.player and int(st.world.countries[o]["tiles"]) > 0 and not st.allied(cid, o) and not st.is_at_war(cid, o):
+				if st.pol_alliance_reason(cid, o) == "":
+					cand.append(o)
+		if not cand.is_empty():
+			st.pol_alliance(cid, int(cand[st.rng.randi_range(0, cand.size() - 1)]))
+	elif r < 0.09:
+		var al: Array = st.allies_of(cid)
+		if not al.is_empty():
+			var other: int = al[st.rng.randi_range(0, al.size() - 1)]
+			if other != st.player:
+				st.pol_leave_with(cid, other)

@@ -81,6 +81,8 @@ func _ready() -> void:
 	hud.confirm_pressed.connect(_on_confirm)
 	hud.port_panel.action.connect(_on_port_action)
 	hud.army_panel.buy_pressed.connect(_on_army_buy)
+	hud.upgrade_panel.buy_upgrade.connect(_on_upgrade)
+	hud.upgrade_panel.buy_ship.connect(_on_buy_ship)
 	hud.group_button_pressed.connect(_on_group_button)
 	hud.group_panel.group_add.connect(_on_group_add)
 	hud.group_panel.target_chosen.connect(_on_group_target)
@@ -119,6 +121,8 @@ func _process(delta: float) -> void:
 	state.army_advance(adt)
 	if hud.menu_open(6):
 		hud.army_panel.update_view(state, state.player)
+	if hud.menu_open(3):
+		hud.upgrade_panel.update_view(state, state.player)
 	if hud.group_panel.visible:
 		hud.group_panel.update_view(state, state.player)
 	if hud.menu_open(7):
@@ -502,6 +506,29 @@ func _close_port() -> void:
 	hud.close_menus()
 
 
+func _on_upgrade(kind: int) -> void:
+	if not playing:
+		return
+	var why := state.upg_reason(state.player, kind)
+	if why != "":
+		hud.show_event(why)
+		return
+	state.upg_buy(state.player, kind)
+	sfx.play("click")
+	_refresh_hud()
+
+
+func _on_buy_ship(t: int) -> void:
+	if not playing:
+		return
+	var res: Dictionary = state.navy_buy_at_capital(state.player, t)
+	hud.show_event(res["msg"])
+	if res["ok"]:
+		sfx.play("click")
+		units.refresh()
+		_refresh_hud()
+
+
 func _on_group_button() -> void:
 	if not playing:
 		return
@@ -539,9 +566,9 @@ func _on_group_order(kind: String) -> void:
 	hud.group_panel._sig = ""
 
 
-func _on_pol_leave() -> void:
-	if playing and state.pol_leave(state.player):
-		hud.show_event("Вы покинули альянс")
+func _on_pol_leave(other: int) -> void:
+	if playing and state.pol_leave_with(state.player, other):
+		hud.show_event("Союз разорван")
 		units.refresh()
 		map_view.refresh()
 		hud.pol_panel.update_view(state, state.player)
@@ -844,10 +871,9 @@ func _refresh_hud() -> void:
 	)
 	hud.set_balance_text(_balance_text(cid))
 	hud.set_politics(float(state.pol_points[cid]))
-	hud.set_pop_text("Население\n\nСейчас: %s\nПрирост: +%d в день" % [GameState.fmt(float(state.population[cid])), int(GameState.POP_GROWTH_FLAT)])
+	hud.set_pop_text("Население\n\nСейчас: %s\nПрирост: +%d в день" % [GameState.fmt(float(state.population[cid])), int(state.pop_growth_day(cid))])
 	hud.set_countries_text(_countries_text())
 	_refresh_production(cid)
-	_refresh_research(cid)
 
 
 func _balance_text(cid: int) -> String:
@@ -868,29 +894,6 @@ func _refresh_production(cid: int) -> void:
 		"%.1f" % state.equip_per_day(cid), int(GameState.EQUIP_PER_DIVISION),
 		int(float(state.equipment[cid]) / GameState.EQUIP_PER_DIVISION)]
 	hud.set_production(pct, text)
-
-
-func _refresh_research(cid: int) -> void:
-	var cur: Dictionary = state.research[cid]
-	var status := "Исследований нет"
-	if not cur.is_empty():
-		var br: int = cur["branch"]
-		status = "Идёт: %s, ещё %d дн." % [GameState.TECH_NAMES[br], int(cur["days_left"])]
-	var list: Array = []
-	for b in 3:
-		var lvl := state.tech_level(cid, b)
-		var nm: String = GameState.TECH_NAMES[b]
-		var eff: String = GameState.TECH_EFFECT[b]
-		var bonus := int(round(float(GameState.TECH_BONUS[b]) * 100.0 * float(lvl)))
-		if lvl >= GameState.TECH_MAX:
-			list.append({"text": "%s %d (макс.): %s +%d%%" % [nm, lvl, eff, bonus], "enabled": false})
-		else:
-			var reason := state.research_block_reason(cid, b)
-			var t := "%s %d → %d: %s (%s)" % [nm, lvl, lvl + 1, eff, GameState.fmt(state.tech_cost(lvl))]
-			if reason == "Не хватает денег":
-				t += " — нет денег"
-			list.append({"text": t, "enabled": reason == ""})
-	hud.set_research(status, list)
 
 
 func _countries_text() -> String:
@@ -976,9 +979,9 @@ func _update_actions(t: int) -> void:
 		if not state.is_at_war(cid, o) and not state.allied(cid, o):
 			var ra := state.pol_alliance_reason(cid, o)
 			var la := "Создать альянс (%d очков)" % int(GameState.ALLY_COST)
-			if int(state.alliance[o]) >= 0:
+			if not state.allies_of(o).is_empty():
 				la = "Вступить в альянс (%d очков)" % int(GameState.ALLY_COST)
-			elif int(state.alliance[cid]) >= 0:
+			elif not state.allies_of(cid).is_empty():
 				la = "Позвать в альянс (%d очков)" % int(GameState.ALLY_COST)
 			if ra == "" or ra == "Не хватает очков":
 				list.append({"id": "ally", "text": la, "enabled": ra == ""})
