@@ -218,24 +218,44 @@ func _ship_pos(sh: Dictionary) -> Vector2:
 	return a
 
 
+func _rc(c: Vector2, s: float, x: float, y: float, w: float, h: float, col: Color) -> void:
+	draw_rect(Rect2(c + Vector2(x, y) * s, Vector2(w, h) * s), col)
+
+
 func _boat(c: Vector2, s: float, col: Color, loaded: bool, war: bool = false) -> void:
 	var dark := Color(0.05, 0.05, 0.1, 0.95)
-	var hull := PackedVector2Array([c + Vector2(-0.8, 0.0) * s, c + Vector2(0.8, 0.0) * s,
-		c + Vector2(0.5, 0.45) * s, c + Vector2(-0.5, 0.45) * s])
-	draw_colored_polygon(hull, dark)
-	var hull_in := PackedVector2Array([c + Vector2(-0.68, 0.05) * s, c + Vector2(0.68, 0.05) * s,
-		c + Vector2(0.44, 0.36) * s, c + Vector2(-0.44, 0.36) * s])
-	var hull_col := Color(0.85, 0.85, 0.9)
 	if war:
-		hull_col = Color(0.5, 0.55, 0.62)
-	draw_colored_polygon(hull_in, hull_col)
-	if war:
-		draw_line(c + Vector2(-0.1, 0.1) * s, c + Vector2(0.8, -0.2) * s, dark, 0.14 * s)
-		draw_circle(c + Vector2(-0.1, 0.1) * s, 0.2 * s, dark)
-	draw_line(c + Vector2(0.0, 0.0) * s, c + Vector2(0.0, -0.8) * s, dark, 0.1 * s)
-	draw_colored_polygon(PackedVector2Array([c + Vector2(0.0, -0.8) * s, c + Vector2(0.55, -0.55) * s, c + Vector2(0.0, -0.3) * s]), col)
-	if loaded:
-		draw_circle(c + Vector2(-0.35, -0.1) * s, 0.16 * s, Color(0.4, 1.0, 0.5))
+		# боевой корабль: длинный острый корпус, серая сталь, две башни с орудиями, труба с дымом
+		draw_colored_polygon(PackedVector2Array([c + Vector2(-1.0, -0.08) * s, c + Vector2(0.8, -0.08) * s,
+			c + Vector2(1.25, 0.18) * s, c + Vector2(0.75, 0.5) * s, c + Vector2(-0.9, 0.5) * s]), dark)
+		draw_colored_polygon(PackedVector2Array([c + Vector2(-0.9, 0.0) * s, c + Vector2(0.75, 0.0) * s,
+			c + Vector2(1.08, 0.18) * s, c + Vector2(0.7, 0.42) * s, c + Vector2(-0.8, 0.42) * s]), Color(0.55, 0.6, 0.68))
+		_rc(c, s, -0.8, 0.24, 1.7, 0.07, Color(0.78, 0.25, 0.25))   # красная полоса
+		_rc(c, s, -0.3, -0.42, 0.62, 0.38, Color(0.38, 0.42, 0.5))   # надстройка
+		_rc(c, s, -0.05, -0.7, 0.14, 0.3, dark)                      # труба
+		draw_circle(c + Vector2(0.02, -0.82) * s, 0.12 * s, Color(0.75, 0.75, 0.78, 0.7))
+		draw_circle(c + Vector2(0.6, -0.04) * s, 0.2 * s, dark)      # носовая башня
+		draw_line(c + Vector2(0.6, -0.04) * s, c + Vector2(1.15, -0.12) * s, dark, 0.1 * s)
+		draw_circle(c + Vector2(-0.62, -0.04) * s, 0.18 * s, dark)   # кормовая башня
+		draw_line(c + Vector2(-0.62, -0.04) * s, c + Vector2(-1.1, -0.1) * s, dark, 0.09 * s)
+		draw_line(c + Vector2(-0.8, -0.05) * s, c + Vector2(-0.8, -0.7) * s, dark, 0.07 * s)
+		draw_colored_polygon(PackedVector2Array([c + Vector2(-0.8, -0.7) * s, c + Vector2(-0.35, -0.55) * s, c + Vector2(-0.8, -0.4) * s]), col)
+	else:
+		# десантный корабль: широкая плоская баржа с носовым трапом, контейнеры на палубе, рубка
+		draw_colored_polygon(PackedVector2Array([c + Vector2(-0.85, -0.05) * s, c + Vector2(0.75, -0.05) * s,
+			c + Vector2(0.95, 0.15) * s, c + Vector2(0.8, 0.5) * s, c + Vector2(-0.85, 0.5) * s]), dark)
+		draw_colored_polygon(PackedVector2Array([c + Vector2(-0.75, 0.03) * s, c + Vector2(0.7, 0.03) * s,
+			c + Vector2(0.84, 0.17) * s, c + Vector2(0.72, 0.42) * s, c + Vector2(-0.75, 0.42) * s]), Color(0.86, 0.78, 0.56))
+		draw_line(c + Vector2(0.95, 0.15) * s, c + Vector2(1.12, 0.32) * s, Color(0.95, 0.9, 0.7), 0.12 * s)   # трап
+		_rc(c, s, -0.55, -0.28, 0.4, 0.3, Color(0.72, 0.42, 0.28))
+		_rc(c, s, -0.1, -0.28, 0.4, 0.3, Color(0.3, 0.52, 0.7))
+		_rc(c, s, -0.82, -0.48, 0.24, 0.45, Color(0.95, 0.95, 0.95))   # рубка
+		_rc(c, s, -0.78, -0.4, 0.16, 0.1, dark)
+		draw_line(c + Vector2(-0.7, -0.48) * s, c + Vector2(-0.7, -0.85) * s, dark, 0.07 * s)
+		draw_colored_polygon(PackedVector2Array([c + Vector2(-0.7, -0.85) * s, c + Vector2(-0.2, -0.7) * s, c + Vector2(-0.7, -0.55) * s]), col)
+		if loaded:
+			draw_circle(c + Vector2(0.5, -0.12) * s, 0.2 * s, Color(0.4, 1.0, 0.5))
+			draw_circle(c + Vector2(0.5, -0.12) * s, 0.2 * s, dark, false, 0.04 * s)
 
 
 func _draw_clash(mid: Vector2, t: float, s: float) -> void:

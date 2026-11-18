@@ -850,6 +850,20 @@ func neighbor_countries(cid: int) -> Array:
 			var o: int = world.tile_owner[nb]
 			if o >= 0 and o != cid and int(world.countries[o]["tiles"]) > 0:
 				seen[o] = true
+	# страны вокруг дивизий (например, после высадки на другом острове) и страны, с которыми война
+	for sq in squads:
+		var u: Dictionary = sq
+		if int(u["owner"]) != cid:
+			continue
+		for k2 in 7:
+			var t2: int = int(u["tile"]) if k2 == 6 else world.neighbor(int(u["tile"]), k2)
+			if t2 >= 0 and world.land[t2] == 1:
+				var o2: int = world.tile_owner[t2]
+				if o2 >= 0 and o2 != cid and int(world.countries[o2]["tiles"]) > 0:
+					seen[o2] = true
+	for o3 in world.countries.size():
+		if o3 != cid and is_at_war(cid, o3) and int(world.countries[o3]["tiles"]) > 0:
+			seen[o3] = true
 	var out: Array = seen.keys()
 	out.sort()
 	return out
@@ -878,6 +892,8 @@ func groups_think() -> void:
 		if ord == G_ATTACK and not is_at_war(player, tgt):
 			gd["order"] = G_NONE
 			continue
+		var tried := 0
+		var done := 0
 		for u in alive:
 			if orders >= 4:
 				break
@@ -885,12 +901,23 @@ func groups_think() -> void:
 			if e.is_empty() or int(e["state"]) != ST_IDLE or int(e["recover"]) > 0:
 				continue
 			var at: int = e["tile"]
+			tried += 1
+			var acted := false
 			if ord == G_ATTACK:
-				if _group_attack(e, at, tgt):
-					orders += 1
+				acted = _group_attack(e, at, tgt)
 			else:
-				if _group_defend(e, at, tgt, taken):
-					orders += 1
+				acted = _group_defend(e, at, tgt, taken)
+				if not acted and _is_front(at, tgt):
+					acted = true   # уже стоит на границе
+			if acted:
+				orders += 1
+				done += 1
+		if tried > 0 and done == 0:
+			if not bool(gd.get("warned", false)):
+				gd["warned"] = true
+				events.append("Группа «%s»: нет пути к цели" % group_name(gd))
+		elif done > 0:
+			gd["warned"] = false
 	_group_reindex()
 
 
@@ -911,10 +938,43 @@ func _group_attack(e: Dictionary, at: int, tgt: int) -> bool:
 		if d.is_empty() or float(e["hp"]) >= float(d["hp"]) * 0.8:
 			if bool(order_move(player, at, nb)["ok"]):
 				return true
+	# к столице цели, если на суше есть путь
 	var cap: int = world.countries[tgt]["capital"]
 	if not find_path(player, at, cap).is_empty():
 		return bool(order_move(player, at, cap)["ok"])
+	# пути к столице нет (например, высадились на другом острове): ближайшая достижимая плитка цели
+	var dest := _bfs_to_owner(player, at, {tgt: true})
+	if dest < 0:
+		# иначе очищаем свой остров от любых врагов, с которыми война
+		var foes := {}
+		for o in world.countries.size():
+			if o != player and is_at_war(player, o) and int(world.countries[o]["tiles"]) > 0:
+				foes[o] = true
+		dest = _bfs_to_owner(player, at, foes)
+	if dest >= 0:
+		return bool(order_move(player, at, dest)["ok"])
 	return false
+
+
+## Ближайшая достижимая по суше плитка, чей хозяин в списке owners. -1 если нет.
+func _bfs_to_owner(cid: int, from: int, owners: Dictionary) -> int:
+	var seen := {from: true}
+	var queue: Array = [from]
+	var qi := 0
+	while qi < queue.size():
+		var cur: int = queue[qi]
+		qi += 1
+		if cur != from and owners.has(int(world.tile_owner[cur])):
+			return cur
+		for k in 6:
+			var nb: int = world.neighbor(cur, k)
+			if nb < 0 or seen.has(nb) or world.land[nb] == 0 or not can_enter(cid, nb) or not _edge_ok(cid, cur, nb):
+				continue
+			if unit_on.has(nb) and not is_at_war(cid, int(Dictionary(unit_on[nb])["owner"])):
+				continue
+			seen[nb] = true
+			queue.append(nb)
+	return -1
 
 
 func _group_defend(e: Dictionary, at: int, tgt: int, taken: Dictionary) -> bool:

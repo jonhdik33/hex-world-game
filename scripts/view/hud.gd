@@ -43,6 +43,11 @@ var _info_label: Label
 var _pick_panel: PanelContainer
 var _pick_label: Label
 var _regen_btn: Button
+var _help_btn: Button
+var _help_panel: PanelContainer
+const HELP_TEXT := "ЦЕЛЬ\nЗахватите столицы всех стран. Если враг возьмёт вашу столицу — вы проиграете. Взятая столица присоединяет страну к победителю.\n\nКАРТА\nПальцем двигайте карту, двумя пальцами приближайте. Нажмите на плитку, чтобы выбрать её. На чужой стране видна информация о ней, на своём городе — кнопки стройки.\n\nДЕНЬГИ И НАСЕЛЕНИЕ\nКазна растёт от заводов (+90 в день каждый) и тратится на армию (−50 за дивизию) и флот. Нажмите на значок казны — увидите подробности. Население растёт каждый день; нажмите на его значок.\nЗаводы строят в городах (кнопка «Построить завод»). Порт можно построить в городе у моря.\n\nАРМИЯ\nДивизии покупаются только в меню со значком каски справа: цена растёт с каждой купленной. Новая дивизия появляется в столице, а если она занята — в ближайшем свободном городе.\nНажмите на свою дивизию, затем на нужную плитку — дивизия пойдёт туда сама. Дивизии не могут стоять на одной плитке. После боя дивизия отдыхает; окружённая (без связи со столицей или прибрежным городом) не лечится.\n\nВОЙНА\nЧтобы начать войну, нажмите на чужую страну: «Оправдать войну» (стоит политических очков). Через 20 дней появится кнопка «Объявить войну». Противник заранее видит плашку «проводит агрессивную политику».\nПредложить мир можно после 10 дней войны.\n\nВОЕННЫЕ ГРУППЫ\nКнопка с силуэтом солдата внизу по центру. Создайте группу (+), нажимайте на свои дивизии, чтобы добавить их (контур цвета группы). Выберите страну сверху и приказ: «Атака» — дивизии сами идут к цели, «Защитить» — встают на границе. «Расформировать» распускает группу.\n\nПОЛИТИКА\nОчки политики: 60 в начале, +2 в день. Тратятся на оправдание войны и альянсы (10 очков). Союзников у страны может быть не больше 5. Союзник вправе отказаться вступать в войну. Вам тоже будут приходить предложения.\n\nФЛОТ\nВ меню «Исследования» на третьей странице покупают десантный и боевой корабли (нужен порт). В порту (значок якоря) корабли можно выбрать и вывести в море. Выберите корабль и нажмите на воду — поплывёт. Нажмите на свою береговую плитку с дивизией — десантный её заберёт; на берег врага — высадит. Боевой корабль топит вражеские десантные и обстреливает дивизии на берегу, отбрасывая их.\n\nИССЛЕДОВАНИЯ\nУлучшайте оружие пехоты, дома (рост населения) и механизацию (быстрее лечение).\n\nСОХРАНЕНИЕ\nИгра сохраняется сама. Кнопка «Продолжить» на экране выбора страны загрузит последнюю партию.\n"
+
+const VERSION_TEXT := "1.0.0"
 var _speed_box: HBoxContainer
 var _speed_buttons: Array = []
 var _action_btns: Array = []
@@ -130,6 +135,45 @@ func _build() -> void:
 	_regen_btn.offset_right = -8.0
 	_regen_btn.offset_top = 8.0
 	_regen_btn.pressed.connect(func(): regen_pressed.emit())
+
+	# --- «Как играть» ---
+	_help_btn = Button.new()
+	_help_btn.text = "Как играть"
+	_help_btn.add_theme_font_size_override("font_size", FONT)
+	add_child(_help_btn)
+	_help_btn.offset_left = 8.0
+	_help_btn.offset_right = 200.0
+	_help_btn.offset_top = 8.0
+	_help_btn.pressed.connect(open_help)
+	_help_panel = _make_panel()
+	add_child(_help_panel)
+	_help_panel.anchor_left = 0.08
+	_help_panel.anchor_right = 0.92
+	_help_panel.anchor_top = 0.06
+	_help_panel.anchor_bottom = 0.94
+	var hv := VBoxContainer.new()
+	_help_panel.add_child(hv)
+	var hrow := HBoxContainer.new()
+	hv.add_child(hrow)
+	var ht := _plain_label("Как играть", Color(1, 0.9, 0.5))
+	ht.add_theme_font_size_override("font_size", 30)
+	ht.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	hrow.add_child(ht)
+	var hx := Button.new()
+	hx.text = "X"
+	hx.custom_minimum_size = Vector2(56, 48)
+	hx.pressed.connect(func(): _help_panel.visible = false)
+	hrow.add_child(hx)
+	var hs := ScrollContainer.new()
+	hs.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	hs.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	hv.add_child(hs)
+	var htext := _plain_label(HELP_TEXT, Color(0.92, 0.95, 1.0))
+	htext.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	htext.custom_minimum_size = Vector2(900, 0)
+	htext.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	hs.add_child(htext)
+	_help_panel.visible = false
 
 	# --- кнопка «Продолжить» (если есть сохранение; только при выборе страны) ---
 	_continue_btn = Button.new()
@@ -325,7 +369,7 @@ func _build() -> void:
 	rbox.add_child(again)
 	_result_panel.visible = false
 
-	_blockers = [_req_panel, group_panel, _group_btn, _top_bar, _hint_panel, _regen_btn, _info_panel, _pick_panel, _speed_box,
+	_blockers = [_help_panel, _help_btn, _req_panel, group_panel, _group_btn, _top_bar, _hint_panel, _regen_btn, _info_panel, _pick_panel, _speed_box,
 		_menu_row, _result_panel, _continue_btn]
 	for p in _menu_panels:
 		_blockers.append(p)
@@ -445,6 +489,12 @@ func _build_menu() -> void:
 	save_btn.add_theme_font_size_override("font_size", FONT)
 	save_btn.pressed.connect(func(): save_pressed.emit())
 	sbox.add_child(save_btn)
+	var help_btn2 := Button.new()
+	help_btn2.text = "Как играть"
+	help_btn2.add_theme_font_size_override("font_size", FONT)
+	help_btn2.pressed.connect(open_help)
+	sbox.add_child(help_btn2)
+	sbox.add_child(_plain_label("Версия %s" % VERSION_TEXT, Color(0.7, 0.75, 0.85)))
 	var new_btn := Button.new()
 	new_btn.text = "Новая игра (с начала)"
 	new_btn.add_theme_font_size_override("font_size", FONT)
@@ -567,6 +617,8 @@ func enter_play() -> void:
 	_regen_btn.visible = false
 	_pick_panel.visible = false
 	_top_bar.visible = true
+	_help_btn.visible = false
+	_help_panel.visible = false
 	_speed_box.visible = true
 	_group_btn.visible = true
 	_menu_row.visible = true
@@ -576,6 +628,7 @@ func enter_play() -> void:
 ## Возврат к выбору страны (новая игра).
 func enter_pick() -> void:
 	_hint_panel.visible = true
+	_help_btn.visible = true
 	_regen_btn.visible = true
 	_pick_panel.visible = false
 	_top_bar.visible = false
@@ -607,6 +660,10 @@ func set_resources(money: float, net: float, factories: int, army: int, pop: flo
 	_lbl_army.text = "%s%d" % [_pfx[_lbl_army], army]
 	_lbl_pop.text = "%s%s" % [_pfx[_lbl_pop], GameState.fmt(pop)]
 	_lbl_date.text = date_text
+
+
+func open_help() -> void:
+	_help_panel.visible = true
 
 
 func show_request(text: String) -> void:
