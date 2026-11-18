@@ -81,6 +81,10 @@ func _ready() -> void:
 	hud.confirm_pressed.connect(_on_confirm)
 	hud.port_panel.action.connect(_on_port_action)
 	hud.army_panel.buy_pressed.connect(_on_army_buy)
+	hud.group_button_pressed.connect(_on_group_button)
+	hud.group_panel.group_add.connect(_on_group_add)
+	hud.group_panel.target_chosen.connect(_on_group_target)
+	hud.group_panel.order_pressed.connect(_on_group_order)
 	hud.pol_panel.leave_pressed.connect(_on_pol_leave)
 	hud.menu_toggled.connect(_on_menu_toggled)
 	hud.regen_pressed.connect(_on_regen)
@@ -115,6 +119,8 @@ func _process(delta: float) -> void:
 	state.army_advance(adt)
 	if hud.menu_open(6):
 		hud.army_panel.update_view(state, state.player)
+	if hud.group_panel.visible:
+		hud.group_panel.update_view(state, state.player)
 	if hud.menu_open(7):
 		hud.pol_panel.update_view(state, state.player)
 	map_view.sync_if_changed()
@@ -146,6 +152,13 @@ func _on_tapped(screen_pos: Vector2, world_pos: Vector2) -> void:
 
 	var i := map_view.pick_land(world_pos)
 	var wt := _water_at(world_pos)
+	# окно групп открыто: нажатие на свою дивизию добавляет/убирает её из выбранной группы
+	if playing and hud.group_panel.visible:
+		if i >= 0 and _has_own_unit(i) and hud.group_panel.selected_id >= 0:
+			state.group_toggle_unit(hud.group_panel.selected_id, i)
+			hud.group_panel._sig = ""
+			units.refresh()
+		return
 	# выбраны свои корабли: нажатие = приказ (плыть / высадка / в гавань) или снятие выбора
 	if playing and not _sel_ships.is_empty():
 		if _ship_tap(i, wt):
@@ -489,6 +502,43 @@ func _close_port() -> void:
 	hud.close_menus()
 
 
+func _on_group_button() -> void:
+	if not playing:
+		return
+	_clear_all()
+	hud.close_menus()
+	if state.groups.is_empty():
+		state.group_new()
+	hud.group_panel.open_panel(state)
+
+
+func _on_group_add() -> void:
+	var gid := state.group_new()
+	if gid < 0:
+		hud.show_event("Больше групп нельзя")
+		return
+	hud.group_panel.selected_id = gid
+	hud.group_panel._sig = ""
+
+
+func _on_group_target(cid: int) -> void:
+	state.group_set_target(hud.group_panel.selected_id, cid)
+	hud.group_panel._sig = ""
+
+
+func _on_group_order(kind: String) -> void:
+	var gid: int = hud.group_panel.selected_id
+	if kind == "disband":
+		state.group_disband(gid)
+		hud.group_panel.selected_id = -1
+		hud.group_panel.open_panel(state)
+		units.refresh()
+		return
+	var res: Dictionary = state.group_set_order(gid, GameState.G_ATTACK if kind == "attack" else GameState.G_DEFEND)
+	hud.show_event(res["msg"])
+	hud.group_panel._sig = ""
+
+
 func _on_pol_leave() -> void:
 	if playing and state.pol_leave(state.player):
 		hud.show_event("Вы покинули альянс")
@@ -576,6 +626,9 @@ func _can_order_to(i: int) -> bool:
 
 
 func _try_move(from: int, to: int) -> void:
+	var mu: Dictionary = state.unit_at(from)
+	if not mu.is_empty():
+		state.group_remove_unit(int(mu["id"]))
 	var res: Dictionary = state.order_move(state.player, from, to)
 	hud.show_event(res["msg"])
 	if res["ok"]:

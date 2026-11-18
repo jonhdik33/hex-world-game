@@ -64,6 +64,10 @@ var world: World
 var day: int = 0              # дней с начала игры
 var player: int = -1          # id страны игрока, -1 = ещё не выбрана
 var money: Array = []         # казна каждой страны (float)
+var groups: Array = []          # военные группы игрока: {id, ci, units, target, order}
+var _next_group: int = 1
+var _gmap: Dictionary = {}      # id дивизии -> цвет группы
+var _group_t: float = 0.0
 var army_total: Array = []      # сколько дивизий страна получила за всё время (для цены покупки)
 var pol_points: Array = []      # политические очки стран
 var justify: Dictionary = {}    # цель -> дней до разрешения войны (0 = можно), только для игрока
@@ -112,6 +116,9 @@ func reset() -> void:
 	army = []
 	build_queue = []
 	recruit_queue = []
+	groups = []
+	_next_group = 1
+	_gmap = {}
 	army_total = []
 	pol_points = []
 	justify = {}
@@ -643,6 +650,222 @@ func can_declare(a: int, b: int) -> bool:
 	return not (truce.has(_pair(a, b)) and int(truce[_pair(a, b)]) > day)
 
 
+# ---------- военные группы (автоматическое ведение войны) ----------
+const GROUP_THINK_SEC := 1.5
+const G_NONE := 0
+const G_ATTACK := 1
+const G_DEFEND := 2
+const GROUP_COLORS: Array = [
+	[Color(1.0, 0.9, 0.2), "Жёлтая"], [Color(1.0, 0.3, 0.3), "Красная"], [Color(0.3, 0.8, 1.0), "Голубая"],
+	[Color(0.5, 1.0, 0.4), "Зелёная"], [Color(1.0, 0.6, 0.15), "Оранжевая"], [Color(1.0, 0.45, 0.85), "Розовая"],
+	[Color(0.7, 0.5, 1.0), "Фиолетовая"], [Color(1.0, 1.0, 1.0), "Белая"],
+]
+
+
+func group_by_id(gid: int) -> Dictionary:
+	for g in groups:
+		var d: Dictionary = g
+		if int(d["id"]) == gid:
+			return d
+	return {}
+
+
+func group_color(g: Dictionary) -> Color:
+	return GROUP_COLORS[int(g["ci"])][0]
+
+
+func group_name(g: Dictionary) -> String:
+	return GROUP_COLORS[int(g["ci"])][1]
+
+
+func group_color_of(uid: int) -> Color:
+	return _gmap.get(uid, Color(0, 0, 0, 0))
+
+
+func _group_reindex() -> void:
+	_gmap = {}
+	for g in groups:
+		var d: Dictionary = g
+		var col := group_color(d)
+		for u in d["units"]:
+			_gmap[int(u)] = col
+
+
+## Новая группа со свободным цветом (жёлтая первой). Возвращает id или -1.
+func group_new() -> int:
+	var used := {}
+	for g in groups:
+		used[int(Dictionary(g)["ci"])] = true
+	for ci in GROUP_COLORS.size():
+		if not used.has(ci):
+			var d := {"id": _next_group, "ci": ci, "units": [], "target": -1, "order": G_NONE}
+			_next_group += 1
+			groups.append(d)
+			return int(d["id"])
+	return -1
+
+
+func group_disband(gid: int) -> void:
+	groups = groups.filter(func(g): return int(Dictionary(g)["id"]) != gid)
+	_group_reindex()
+
+
+## Нажатие на свою дивизию в режиме группы: добавить в группу или убрать из неё.
+func group_toggle_unit(gid: int, tile: int) -> bool:
+	var g := group_by_id(gid)
+	var u := unit_at(tile)
+	if g.is_empty() or u.is_empty() or int(u["owner"]) != player:
+		return false
+	var uid: int = u["id"]
+	var mine: Array = g["units"]
+	if mine.has(uid):
+		mine.erase(uid)
+	else:
+		group_remove_unit(uid)
+		mine.append(uid)
+	_group_reindex()
+	return true
+
+
+func group_remove_unit(uid: int) -> void:
+	for g in groups:
+		Dictionary(g)["units"].erase(uid)
+	_group_reindex()
+
+
+func group_set_target(gid: int, cid: int) -> void:
+	var g := group_by_id(gid)
+	if g.is_empty():
+		return
+	g["target"] = cid
+	if int(g["order"]) == G_ATTACK and not is_at_war(player, cid):
+		g["order"] = G_NONE
+
+
+## Приказ группе. {"ok","msg"}
+func group_set_order(gid: int, order: int) -> Dictionary:
+	var g := group_by_id(gid)
+	if g.is_empty():
+		return {"ok": false, "msg": "Нет группы"}
+	var t: int = g["target"]
+	if t < 0 or int(world.countries[t]["tiles"]) <= 0:
+		return {"ok": false, "msg": "Выберите страну сверху"}
+	if order == G_ATTACK and not is_at_war(player, t):
+		return {"ok": false, "msg": "Для атаки нужна война с этой страной"}
+	g["order"] = order
+	return {"ok": true, "msg": "Приказ отдан"}
+
+
+## Страны, граничащие с cid.
+func neighbor_countries(cid: int) -> Array:
+	var seen := {}
+	for i in world.tile_total():
+		if world.land[i] != 1 or world.tile_owner[i] != cid:
+			continue
+		for k in 6:
+			var nb: int = world.neighbor(i, k)
+			if nb < 0 or world.land[nb] == 0:
+				continue
+			var o: int = world.tile_owner[nb]
+			if o >= 0 and o != cid and int(world.countries[o]["tiles"]) > 0:
+				seen[o] = true
+	var out: Array = seen.keys()
+	out.sort()
+	return out
+
+
+func groups_think() -> void:
+	if groups.is_empty():
+		return
+	var orders := 0
+	var taken := {}
+	for g in groups:
+		var gd: Dictionary = g
+		# погибшие дивизии выбывают
+		var alive: Array = []
+		for u in gd["units"]:
+			if _unit_by_id(int(u)).size() > 0:
+				alive.append(int(u))
+		gd["units"] = alive
+		var tgt: int = gd["target"]
+		var ord: int = gd["order"]
+		if ord == G_NONE or tgt < 0:
+			continue
+		if int(world.countries[tgt]["tiles"]) <= 0:
+			gd["order"] = G_NONE
+			continue
+		if ord == G_ATTACK and not is_at_war(player, tgt):
+			gd["order"] = G_NONE
+			continue
+		for u in alive:
+			if orders >= 4:
+				break
+			var e := _unit_by_id(int(u))
+			if e.is_empty() or int(e["state"]) != ST_IDLE or int(e["recover"]) > 0:
+				continue
+			var at: int = e["tile"]
+			if ord == G_ATTACK:
+				if _group_attack(e, at, tgt):
+					orders += 1
+			else:
+				if _group_defend(e, at, tgt, taken):
+					orders += 1
+	_group_reindex()
+
+
+func _unit_by_id(uid: int) -> Dictionary:
+	for sq in squads:
+		var e: Dictionary = sq
+		if int(e["id"]) == uid and not bool(e["dead"]):
+			return e
+	return {}
+
+
+func _group_attack(e: Dictionary, at: int, tgt: int) -> bool:
+	for k in 6:
+		var nb: int = world.neighbor(at, k)
+		if nb < 0 or world.land[nb] == 0 or world.tile_owner[nb] != tgt:
+			continue
+		var d := unit_at(nb)
+		if d.is_empty() or float(e["hp"]) >= float(d["hp"]) * 0.8:
+			if bool(order_move(player, at, nb)["ok"]):
+				return true
+	var cap: int = world.countries[tgt]["capital"]
+	if not find_path(player, at, cap).is_empty():
+		return bool(order_move(player, at, cap)["ok"])
+	return false
+
+
+func _group_defend(e: Dictionary, at: int, tgt: int, taken: Dictionary) -> bool:
+	if _is_front(at, tgt):
+		taken[at] = true
+		return false
+	var best := -1
+	var best_d := 0.0
+	var here: Vector2 = world.center_of(at)
+	for i in world.tile_total():
+		if world.land[i] != 1 or world.tile_owner[i] != player or unit_on.has(i) or taken.has(i):
+			continue
+		if not _is_front(i, tgt):
+			continue
+		var dd: float = here.distance_squared_to(world.center_of(i))
+		if best < 0 or dd < best_d:
+			best = i
+			best_d = dd
+	if best < 0:
+		return false
+	taken[best] = true
+	return bool(order_move(player, at, best)["ok"])
+
+
+func _is_front(t: int, tgt: int) -> bool:
+	for k in 6:
+		var nb: int = world.neighbor(t, k)
+		if nb >= 0 and world.land[nb] == 1 and world.tile_owner[nb] == tgt:
+			return true
+	return false
+
+
 func declare_war(a: int, b: int) -> bool:
 	if not can_declare(a, b) or allied(a, b):
 		return false
@@ -974,6 +1197,10 @@ func advance(dt: float) -> void:
 			continue
 		_advance_move(e, dt)
 	_tick_battles(dt)
+	_group_t += dt
+	if _group_t >= GROUP_THINK_SEC:
+		_group_t = 0.0
+		groups_think()
 
 
 func _advance_move(e: Dictionary, dt: float) -> void:

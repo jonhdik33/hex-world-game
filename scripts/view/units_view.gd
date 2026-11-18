@@ -132,6 +132,9 @@ func _draw() -> void:
 		# мягкая тень под солдатом
 		draw_colored_polygon(_ellipse(pos + Vector2(0, s * 0.5), s * 0.38, s * 0.12), Color(0, 0, 0, 0.28))
 		_soldier(pos, s * 0.9, _owner_color(o))
+		var gcol: Color = state.group_color_of(int(u["id"]))
+		if gcol.a > 0.0:
+			draw_arc(pos + Vector2(0, s * 0.05), s * 0.58, 0.0, TAU, 28, gcol, maxf(2.5, s * 0.1))
 		var hp: float = float(u["hp"]) / GameState.MAX_HP
 		var bar := Rect2(pos + Vector2(-s * 0.4, s * 0.55), Vector2(s * 0.8, s * 0.12))
 		draw_rect(bar, Color(0, 0, 0, 0.8))

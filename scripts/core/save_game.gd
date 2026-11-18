@@ -47,6 +47,8 @@ static func save(world, state, seed_value: int) -> bool:
 	var data := {
 		"pol": state.pol_points,
 		"army_total": state.army_total,
+		"groups": state.groups,
+		"next_group": state._next_group,
 		"justify": jf,
 		"war_cost": wc,
 		"alliance": state.alliance,
@@ -175,6 +177,15 @@ static func load_into(world, state) -> bool:
 		state.pol_points.append(float(pl[c]) if c < pl.size() else 60.0)
 		state.alliance.append(int(al[c]) if c < al.size() else -1)
 	state._next_alliance = int(d.get("next_alliance", 1))
+	state.groups = []
+	for gg in d.get("groups", []):
+		var gd2: Dictionary = gg
+		var us: Array = []
+		for uu in gd2["units"]:
+			us.append(int(uu))
+		state.groups.append({"id": int(gd2["id"]), "ci": int(gd2["ci"]), "units": us, "target": int(gd2["target"]), "order": int(gd2["order"])})
+	state._next_group = int(d.get("next_group", 1))
+	state._group_reindex()
 	var at_l: Array = d.get("army_total", [])
 	state.army_total = []
 	for c3 in n_c:

@@ -27,6 +27,7 @@ const MENU_NAMES: Array = ["Баланс", "Страны", "Производст
 const PortPanel = preload("res://scripts/view/port_panel.gd")
 const ArmyPanel = preload("res://scripts/view/army_panel.gd")
 const PolPanel = preload("res://scripts/view/pol_panel.gd")
+const GroupPanel = preload("res://scripts/view/group_panel.gd")
 const ICON_DIR := "res://assets/icons/"
 
 var _top_bar: PanelContainer
@@ -65,6 +66,9 @@ var port_panel: PortPanel
 var army_panel: ArmyPanel
 var pol_panel: PolPanel
 var _lbl_pol: Label
+var group_panel: GroupPanel
+var _group_btn: Button
+signal group_button_pressed
 var _pop_label: Label
 var _blockers: Array = []
 var _continue_btn: Button
@@ -135,7 +139,7 @@ func _build() -> void:
 	_info_panel.anchor_top = 1.0
 	_info_panel.anchor_bottom = 1.0
 	_info_panel.offset_left = 8.0
-	_info_panel.offset_bottom = -8.0
+	_info_panel.offset_bottom = -72.0
 	_info_panel.grow_vertical = Control.GROW_DIRECTION_BEGIN
 	var ibox := VBoxContainer.new()
 	_info_panel.add_child(ibox)
@@ -150,6 +154,39 @@ func _build() -> void:
 		ibox.add_child(ab)
 		_action_btns.append(ab)
 		_action_ids.append("")
+
+	# --- военные группы: кнопка-профиль внизу по центру и окно ---
+	group_panel = GroupPanel.new()
+	add_child(group_panel)
+	group_panel.anchor_left = 0.5
+	group_panel.anchor_right = 0.5
+	group_panel.anchor_top = 1.0
+	group_panel.anchor_bottom = 1.0
+	group_panel.offset_bottom = -8.0
+	group_panel.offset_left = -330.0
+	group_panel.offset_right = 380.0
+	group_panel.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	group_panel.visible = false
+	group_panel.closed.connect(func(): group_panel.visible = false)
+	_group_btn = Button.new()
+	add_child(_group_btn)
+	_group_btn.anchor_left = 0.5
+	_group_btn.anchor_right = 0.5
+	_group_btn.anchor_top = 1.0
+	_group_btn.anchor_bottom = 1.0
+	_group_btn.offset_left = -36.0
+	_group_btn.offset_right = 36.0
+	_group_btn.offset_top = -80.0
+	_group_btn.offset_bottom = -8.0
+	_group_btn.tooltip_text = "Военные группы"
+	var gtex := load("res://assets/icons/soldier.svg") as Texture2D
+	if gtex != null:
+		_group_btn.icon = gtex
+		_group_btn.expand_icon = true
+	else:
+		_group_btn.text = "Группы"
+	_group_btn.visible = false
+	_group_btn.pressed.connect(func(): group_button_pressed.emit())
 
 	# --- окно выбора страны (по центру внизу) ---
 	_pick_panel = _make_panel()
@@ -237,7 +274,7 @@ func _build() -> void:
 	rbox.add_child(again)
 	_result_panel.visible = false
 
-	_blockers = [_top_bar, _hint_panel, _regen_btn, _info_panel, _pick_panel, _speed_box,
+	_blockers = [group_panel, _group_btn, _top_bar, _hint_panel, _regen_btn, _info_panel, _pick_panel, _speed_box,
 		_menu_row, _result_panel, _continue_btn]
 	for p in _menu_panels:
 		_blockers.append(p)
@@ -483,6 +520,7 @@ func enter_play() -> void:
 	_pick_panel.visible = false
 	_top_bar.visible = true
 	_speed_box.visible = true
+	_group_btn.visible = true
 	_menu_row.visible = true
 	_continue_btn.visible = false
 
@@ -494,6 +532,8 @@ func enter_pick() -> void:
 	_pick_panel.visible = false
 	_top_bar.visible = false
 	_speed_box.visible = false
+	_group_btn.visible = false
+	group_panel.visible = false
 	_menu_row.visible = false
 	_result_panel.visible = false
 	_close_menu()
