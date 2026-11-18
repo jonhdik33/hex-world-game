@@ -81,6 +81,7 @@ func _ready() -> void:
 	hud.confirm_pressed.connect(_on_confirm)
 	hud.port_panel.action.connect(_on_port_action)
 	hud.army_panel.buy_pressed.connect(_on_army_buy)
+	hud.request_answered.connect(_on_request_answer)
 	hud.upgrade_panel.buy_upgrade.connect(_on_upgrade)
 	hud.upgrade_panel.buy_ship.connect(_on_buy_ship)
 	hud.group_button_pressed.connect(_on_group_button)
@@ -121,6 +122,12 @@ func _process(delta: float) -> void:
 	state.army_advance(adt)
 	if hud.menu_open(6):
 		hud.army_panel.update_view(state, state.player)
+	var rq: Dictionary = state.req_current()
+	if rq.is_empty():
+		hud.hide_request()
+	else:
+		hud.show_request(state.req_text(rq))
+	hud.set_notices(state.aggression_notices(state.player))
 	if hud.menu_open(3):
 		hud.upgrade_panel.update_view(state, state.player)
 	if hud.group_panel.visible:
@@ -284,10 +291,9 @@ func _on_action(id: String) -> void:
 			hud.show_event(state.pol_justify_reason(cid, oj))
 	elif id == "ally":
 		var oa: int = world.tile_owner[t]
-		if oa >= 0 and state.pol_alliance(cid, oa):
-			hud.show_event("Альянс заключён")
-		elif oa >= 0:
-			hud.show_event(state.pol_alliance_reason(cid, oa))
+		if oa >= 0:
+			var rp2: Dictionary = state.pol_propose_alliance(cid, oa)
+			hud.show_event(rp2["msg"])
 	elif id == "recruit":
 		if state.recruit(cid, t):
 			hud.show_event("Нанята дивизия")
@@ -415,7 +421,7 @@ func _show_ship_info(ships: Array) -> void:
 			lines.append("Десантный корабль с дивизией")
 	else:
 		lines.append("Выбрано кораблей: %d (десантных %d, боевых %d)" % [ships.size(), cargo_n, war_n])
-	lines.append("Нажмите на воду — плыть")
+	lines.append("Нажмите на воду — плыть; на вражескую дивизию у берега — атака")
 	lines.append("На берег — высадка десанта, на свой порт — в гавань")
 	lines.append("На этот же корабль — снять выбор")
 	hud.set_info("\n".join(lines))
@@ -476,6 +482,23 @@ func _ship_tap(i: int, wt: int) -> bool:
 					sfx.play("click")
 					_deselect_ships()
 				return true
+	# боевой корабль атакует вражескую дивизию на береговой плитке
+	var enemy_u: Dictionary = state.unit_at(i)
+	if not enemy_u.is_empty() and state.is_at_war(pid, int(enemy_u["owner"])):
+		var attacked := false
+		var amsg := ""
+		for sh in ships:
+			if int(Dictionary(sh)["type"]) == 1:
+				var ra: Dictionary = state.navy_attack(pid, sh, i)
+				amsg = ra["msg"]
+				if ra["ok"]:
+					attacked = true
+		if amsg != "":
+			hud.show_event(amsg)
+		if attacked:
+			sfx.play("click")
+			_deselect_ships()
+			return true
 	# высадка: нужен корабль с дивизией и свободная плитка (своя или страны, с которой война)
 	var carrier: Dictionary = {}
 	for sh in ships:
@@ -504,6 +527,12 @@ func _open_port(t: int) -> void:
 
 func _close_port() -> void:
 	hud.close_menus()
+
+
+func _on_request_answer(accept: bool) -> void:
+	state.request_answer(accept)
+	units.refresh()
+	_refresh_hud()
 
 
 func _on_upgrade(kind: int) -> void:
@@ -881,6 +910,7 @@ func _balance_text(cid: int) -> String:
 	var lines: Array[String] = ["Казна: %s" % GameState.fmt(float(state.money[cid])), ""]
 	lines.append("Заводы приносят: %s" % GameState.fmt_signed(b["industry"]))
 	lines.append("Армия содержание: %s" % GameState.fmt_signed(-float(b["upkeep_army"])))
+	lines.append("Флот содержание: %s" % GameState.fmt_signed(-float(b["upkeep_ships"])))
 	lines.append("")
 	lines.append("Итого в день: %s" % GameState.fmt_signed(b["net"]))
 	return "\n".join(lines)
@@ -978,11 +1008,7 @@ func _update_actions(t: int) -> void:
 				list.append({"id": "war", "text": "Объявить войну: %s" % cn["name"], "enabled": true})
 		if not state.is_at_war(cid, o) and not state.allied(cid, o):
 			var ra := state.pol_alliance_reason(cid, o)
-			var la := "Создать альянс (%d очков)" % int(GameState.ALLY_COST)
-			if not state.allies_of(o).is_empty():
-				la = "Вступить в альянс (%d очков)" % int(GameState.ALLY_COST)
-			elif not state.allies_of(cid).is_empty():
-				la = "Позвать в альянс (%d очков)" % int(GameState.ALLY_COST)
+			var la := "Предложить альянс (%d очков)" % int(GameState.ALLY_COST)
 			if ra == "" or ra == "Не хватает очков":
 				list.append({"id": "ally", "text": la, "enabled": ra == ""})
 		hud.set_actions(list)

@@ -319,18 +319,22 @@ static func _nearest_tile(st, cell: int, tiles: Array) -> int:
 	return best
 
 
-## Политика ботов: заключают и разрывают альянсы между собой.
+## Политика ботов: заключают и разрывают альянсы (не больше 5 союзников у страны).
 static func _politics(st, cid: int) -> void:
 	var r: float = st.rng.randf()
-	if r < 0.06:
+	if r < 0.03:
 		var cand: Array = []
 		for o in st.world.countries.size():
 			if o != cid and o != st.player and int(st.world.countries[o]["tiles"]) > 0 and not st.allied(cid, o) and not st.is_at_war(cid, o):
 				if st.pol_alliance_reason(cid, o) == "":
 					cand.append(o)
 		if not cand.is_empty():
-			st.pol_alliance(cid, int(cand[st.rng.randi_range(0, cand.size() - 1)]))
-	elif r < 0.09:
+			st.pol_propose_alliance(cid, int(cand[st.rng.randi_range(0, cand.size() - 1)]))
+	elif r < 0.035:
+		# редкое предложение игроку (он может согласиться или отказаться)
+		if not st.allied(cid, st.player) and not st.is_at_war(cid, st.player) and st.pol_alliance_reason(cid, st.player) == "":
+			st.pol_propose_alliance(cid, st.player)
+	elif r < 0.06:
 		var al: Array = st.allies_of(cid)
 		if not al.is_empty():
 			var other: int = al[st.rng.randi_range(0, al.size() - 1)]

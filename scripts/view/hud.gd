@@ -67,10 +67,16 @@ var port_panel: PortPanel
 var army_panel: ArmyPanel
 var pol_panel: PolPanel
 var _lbl_pol: Label
+var _req_panel: PanelContainer
+var _req_label: Label
+var _notice_box: VBoxContainer
+var _notice_sig := ""
+var _notice_bars: Array = []
 var group_panel: GroupPanel
 var upgrade_panel: UpgradePanel
 var _group_btn: Button
 signal group_button_pressed
+signal request_answered(accept: bool)
 var _pop_label: Label
 var _blockers: Array = []
 var _continue_btn: Button
@@ -190,6 +196,49 @@ func _build() -> void:
 	_group_btn.visible = false
 	_group_btn.pressed.connect(func(): group_button_pressed.emit())
 
+	# --- запрос игроку (альянс / вступление в войну) ---
+	_req_panel = _make_panel()
+	add_child(_req_panel)
+	_req_panel.anchor_left = 0.5
+	_req_panel.anchor_right = 0.5
+	_req_panel.anchor_top = 0.5
+	_req_panel.anchor_bottom = 0.5
+	_req_panel.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	_req_panel.grow_vertical = Control.GROW_DIRECTION_BOTH
+	var rbox2 := VBoxContainer.new()
+	rbox2.add_theme_constant_override("separation", 10)
+	_req_panel.add_child(rbox2)
+	_req_label = _plain_label("", Color(1, 1, 1))
+	_req_label.custom_minimum_size = Vector2(420, 0)
+	_req_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	rbox2.add_child(_req_label)
+	var rrow := HBoxContainer.new()
+	rrow.add_theme_constant_override("separation", 12)
+	rbox2.add_child(rrow)
+	var yes := Button.new()
+	yes.text = "Согласиться"
+	yes.custom_minimum_size = Vector2(190, 52)
+	yes.add_theme_font_size_override("font_size", FONT)
+	yes.pressed.connect(func(): request_answered.emit(true))
+	rrow.add_child(yes)
+	var no := Button.new()
+	no.text = "Отказаться"
+	no.custom_minimum_size = Vector2(190, 52)
+	no.add_theme_font_size_override("font_size", FONT)
+	no.pressed.connect(func(): request_answered.emit(false))
+	rrow.add_child(no)
+	_req_panel.visible = false
+
+	# --- уведомления об агрессии (справа, с полоской) ---
+	_notice_box = VBoxContainer.new()
+	add_child(_notice_box)
+	_notice_box.anchor_left = 1.0
+	_notice_box.anchor_right = 1.0
+	_notice_box.offset_right = -84.0
+	_notice_box.offset_top = 56.0
+	_notice_box.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+	_notice_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+
 	# --- окно выбора страны (по центру внизу) ---
 	_pick_panel = _make_panel()
 	add_child(_pick_panel)
@@ -276,7 +325,7 @@ func _build() -> void:
 	rbox.add_child(again)
 	_result_panel.visible = false
 
-	_blockers = [group_panel, _group_btn, _top_bar, _hint_panel, _regen_btn, _info_panel, _pick_panel, _speed_box,
+	_blockers = [_req_panel, group_panel, _group_btn, _top_bar, _hint_panel, _regen_btn, _info_panel, _pick_panel, _speed_box,
 		_menu_row, _result_panel, _continue_btn]
 	for p in _menu_panels:
 		_blockers.append(p)
@@ -558,6 +607,48 @@ func set_resources(money: float, net: float, factories: int, army: int, pop: flo
 	_lbl_army.text = "%s%d" % [_pfx[_lbl_army], army]
 	_lbl_pop.text = "%s%s" % [_pfx[_lbl_pop], GameState.fmt(pop)]
 	_lbl_date.text = date_text
+
+
+func show_request(text: String) -> void:
+	_req_label.text = text
+	_req_panel.visible = true
+
+
+func hide_request() -> void:
+	_req_panel.visible = false
+
+
+## Плашки «страна проводит агрессию» с полоской загрузки: [{text, color, frac}].
+func set_notices(list: Array) -> void:
+	var sig := ""
+	for it in list:
+		sig += String(Dictionary(it)["text"]) + "|"
+	if sig != _notice_sig:
+		_notice_sig = sig
+		_notice_bars = []
+		for c in _notice_box.get_children():
+			c.queue_free()
+		for it2 in list:
+			var d: Dictionary = it2
+			var p := _make_panel()
+			p.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			var v := VBoxContainer.new()
+			p.add_child(v)
+			var l := _plain_label(String(d["text"]), Color(d["color"]).lightened(0.45))
+			l.custom_minimum_size = Vector2(300, 0)
+			l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			v.add_child(l)
+			var bar := ProgressBar.new()
+			bar.min_value = 0.0
+			bar.max_value = 1.0
+			bar.show_percentage = false
+			bar.custom_minimum_size = Vector2(300, 12)
+			v.add_child(bar)
+			_notice_box.add_child(p)
+			_notice_bars.append(bar)
+	for n in mini(list.size(), _notice_bars.size()):
+		var br: ProgressBar = _notice_bars[n]
+		br.value = float(Dictionary(list[n])["frac"])
 
 
 func set_politics(points: float) -> void:

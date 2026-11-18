@@ -74,6 +74,7 @@ var justify: Dictionary = {}    # цель -> дней до разрешения
 var war_cost: Dictionary = {}   # цель -> цена оправдания войны (случайно 30-50)
 var ally_pairs: Dictionary = {} # пары союзников (ключ пары -> true)
 var bot_just: Dictionary = {}   # бот*1000+цель -> дней до разрешения войны
+var requests: Array = []        # запросы игроку: {kind: ally|war, from, target}
 var upg: Array = []             # улучшения стран: [оружие, дома, механизация]
 var recruit_queue: Array = []   # покупки дивизий в процессе: {cid, t}
 var population: Array = []    # население каждой страны (float)
@@ -127,6 +128,8 @@ func reset() -> void:
 	ally_pairs = {}
 	bot_just = {}
 	upg = []
+	requests = []
+	requests = []
 	events = []
 	sounds = []
 	battles = []
@@ -215,7 +218,7 @@ func budget(cid: int) -> Dictionary:
 	var up_f := float(cn["factories"]) * FACTORY_UPKEEP
 	var up_c := float(cn["cities"]) * CITY_UPKEEP
 	var up_a := float(army[cid]) * DIVISION_UPKEEP
-	var up_s := 0.0   # флот в бюджет не входит
+	var up_s := fleet_upkeep(cid)
 	var income := tax + industry
 	var expenses := up_f + up_c + up_a + up_s
 	return {
@@ -956,11 +959,83 @@ func declare_war(a: int, b: int) -> bool:
 		for m in allies_of(me):
 			var mi: int = m
 			if mi != me and mi != foe and not allied(mi, foe) and not is_at_war(mi, foe) and int(world.countries[mi]["tiles"]) > 0:
-				at_war[_pair(mi, foe)] = true
-				war_since[_pair(mi, foe)] = day
-				if foe == player or mi == player:
-					events.append("%s вступает в войну" % world.countries[mi]["name"])
+				_war_call(me, mi, foe)
 	return true
+
+
+## Союзник caller просит ally вступить в войну против foe. Игрок решает сам, боты — случайно.
+func _war_call(caller: int, ally: int, foe: int) -> void:
+	if ally == player:
+		_req_add("war", caller, foe)
+		return
+	var cname: String = world.countries[ally]["name"]
+	if can_declare(ally, foe) and not allied(ally, foe) and rng.randf() < 0.5:
+		at_war[_pair(ally, foe)] = true
+		war_since[_pair(ally, foe)] = day
+		if caller == player or foe == player:
+			events.append("%s вступает в войну" % cname)
+	elif caller == player:
+		events.append("%s отказалась вступить в войну" % cname)
+
+
+func _req_add(kind: String, from: int, target: int) -> void:
+	for r in requests:
+		var d: Dictionary = r
+		if d["kind"] == kind and int(d["from"]) == from and int(d["target"]) == target:
+			return
+	requests.append({"kind": kind, "from": from, "target": target})
+	sounds.append("alert")
+
+
+func _req_valid(r: Dictionary) -> bool:
+	var from: int = r["from"]
+	if int(world.countries[from]["tiles"]) <= 0:
+		return false
+	if r["kind"] == "ally":
+		return pol_alliance_reason(from, player) == ""
+	var tg: int = r["target"]
+	return is_at_war(from, tg) and not is_at_war(player, tg) and not allied(player, tg) and int(world.countries[tg]["tiles"]) > 0 and can_declare(player, tg)
+
+
+## Текущий запрос игроку (недействительные отбрасываются). {} если нет.
+func req_current() -> Dictionary:
+	while not requests.is_empty():
+		var r: Dictionary = requests[0]
+		if _req_valid(r):
+			return r
+		requests.pop_front()
+	return {}
+
+
+func req_text(r: Dictionary) -> String:
+	var fn: String = world.countries[int(r["from"])]["name"]
+	if r["kind"] == "ally":
+		return "Страна %s предлагает заключить альянс" % fn
+	return "Страна %s предлагает вступить в войну со страной %s" % [fn, world.countries[int(r["target"])]["name"]]
+
+
+func request_answer(accept: bool) -> void:
+	var r := req_current()
+	if r.is_empty():
+		return
+	requests.pop_front()
+	var from: int = r["from"]
+	var fn: String = world.countries[from]["name"]
+	if r["kind"] == "ally":
+		if accept:
+			pol_points[from] = float(pol_points[from]) - ALLY_COST
+			ally_pairs[_pair(from, player)] = true
+			events.append("Вы заключили альянс: %s" % fn)
+		else:
+			events.append("Вы отказались от альянса с %s" % fn)
+		return
+	var tg: int = r["target"]
+	if accept:
+		at_war[_pair(player, tg)] = true
+		war_since[_pair(player, tg)] = day
+		events.append("Вы вступили в войну со страной %s" % world.countries[tg]["name"])
+	else:
+		events.append("Вы отказались вступать в войну")
 
 
 # ---------- политика: очки, оправдание войны, альянсы ----------
@@ -1008,7 +1083,27 @@ func bot_war_gate(cid: int, target: int) -> bool:
 	if float(pol_points[cid]) >= cost:
 		pol_points[cid] = float(pol_points[cid]) - cost
 		bot_just[key] = JUSTIFY_DAYS
+		if target == player:
+			events.append("%s проводит агрессивную политику против вас" % world.countries[cid]["name"])
+			sounds.append("alert")
 	return false
+
+
+## Уведомления об агрессии (для полоски справа): [{text, color, frac}].
+func aggression_notices(cid: int) -> Array:
+	var out: Array = []
+	for k in bot_just.keys():
+		var ki: int = k
+		if ki % 1000 == cid:
+			var ag: int = floori(float(ki) / 1000.0)
+			out.append({"text": "%s проводит агрессивную политику против вас" % world.countries[ag]["name"],
+				"color": world.countries[ag]["color"], "frac": 1.0 - float(int(bot_just[k])) / float(JUSTIFY_DAYS)})
+	for k2 in justify.keys():
+		var left: int = justify[k2]
+		if left > 0:
+			out.append({"text": "Ваша агрессия против %s" % world.countries[int(k2)]["name"],
+				"color": world.countries[int(k2)]["color"], "frac": 1.0 - float(left) / float(JUSTIFY_DAYS)})
+	return out
 
 
 func pol_justify_state(target: int) -> int:
@@ -1050,6 +1145,9 @@ func player_declare_war(target: int) -> Dictionary:
 	return {"ok": true, "msg": "Война объявлена"}
 
 
+const MAX_ALLIES := 5
+
+
 func pol_alliance_reason(cid: int, target: int) -> String:
 	if allied(cid, target):
 		return "Уже союзники"
@@ -1057,6 +1155,10 @@ func pol_alliance_reason(cid: int, target: int) -> String:
 		return "Идёт война"
 	if float(pol_points[cid]) < ALLY_COST:
 		return "Не хватает очков"
+	if allies_of(cid).size() >= MAX_ALLIES:
+		return "Уже %d союзников" % MAX_ALLIES
+	if allies_of(target).size() >= MAX_ALLIES:
+		return "У этой страны уже %d союзников" % MAX_ALLIES
 	for m in allies_of(target):
 		if is_at_war(cid, int(m)):
 			return "Война с союзником этой страны"
@@ -1066,25 +1168,25 @@ func pol_alliance_reason(cid: int, target: int) -> String:
 	return ""
 
 
-## Заключить альянс (10 очков). Если у страны уже есть союзники, вы становитесь союзником и им.
-func pol_alliance(cid: int, target: int) -> bool:
-	if pol_alliance_reason(cid, target) != "":
-		return false
-	pol_points[cid] = float(pol_points[cid]) - ALLY_COST
-	var grp: Array = [cid, target]
-	for m in allies_of(target):
-		if not grp.has(int(m)):
-			grp.append(int(m))
-	for m2 in allies_of(cid):
-		if not grp.has(int(m2)):
-			grp.append(int(m2))
-	for i in grp.size():
-		for j in range(i + 1, grp.size()):
-			var x: int = grp[i]
-			var y: int = grp[j]
-			if not is_at_war(x, y):
-				ally_pairs[_pair(x, y)] = true
-	return true
+## Предложение альянса от cid к target (10 очков списываются только при согласии).
+## Игрок → бот: бот отвечает сразу, игрок получает уведомление. Бот → игрок: запрос игроку.
+func pol_propose_alliance(cid: int, target: int) -> Dictionary:
+	var why := pol_alliance_reason(cid, target)
+	if why != "":
+		return {"ok": false, "msg": why}
+	if target == player:
+		_req_add("ally", cid, target)
+		return {"ok": true, "msg": "Запрос отправлен"}
+	var tn: String = world.countries[target]["name"]
+	if rng.randf() < 0.6:
+		pol_points[cid] = float(pol_points[cid]) - ALLY_COST
+		ally_pairs[_pair(cid, target)] = true
+		if cid == player:
+			events.append("%s согласилась вступить в альянс" % tn)
+		return {"ok": true, "msg": "Альянс заключён"}
+	if cid == player:
+		events.append("%s отказалась вступить в альянс" % tn)
+	return {"ok": true, "msg": "Предложение отклонено"}
 
 
 ## Выйти из союза с одной страной (с остальными союзниками союз сохраняется).
@@ -1766,9 +1868,9 @@ func format_date() -> String:
 const PORT_COST := 3000.0
 const PORT_DAYS := 8
 const TRANSPORT_COST := 6000.0
-const SHIP_UPKEEP := 60.0        # содержание десантного корабля в день
+const SHIP_UPKEEP := 40.0        # содержание десантного корабля в день
 const WARSHIP_COST := 15000.0
-const WARSHIP_UPKEEP := 120.0
+const WARSHIP_UPKEEP := 80.0
 const BOMB_DPS := 7.0            # урон боевого корабля по дивизии в секунду
 const BOMB_SECONDS := 6.0        # длительность обстрела
 const T_CARGO := 0
@@ -1852,7 +1954,7 @@ func navy_ship_by_id(id: int) -> Dictionary:
 
 func navy_new_ship(cid: int, cell: int, ship_type: int = 0, dock: int = -1) -> Dictionary:
 	var sh := {"id": _next_ship_id, "owner": cid, "cell": cell, "from_cell": cell, "path": [], "p": 0.0,
-		"state": 0, "cargo": {}, "land_tile": -1, "load_tile": -1, "type": ship_type, "bomb": -1, "bomb_t": 0.0,
+		"state": 0, "cargo": {}, "land_tile": -1, "load_tile": -1, "bomb_to": -1, "type": ship_type, "bomb": -1, "bomb_t": 0.0,
 		"dock": dock, "dock_to": -1}
 	_next_ship_id += 1
 	ships.append(sh)
@@ -2077,6 +2179,7 @@ func navy_order_ship(cid: int, ship: Dictionary, dest_cell: int, land_tile: int,
 	var w = world
 	ship["bomb"] = -1
 	ship["bomb_t"] = 0.0
+	ship["bomb_to"] = -1
 	var start: int = ship["cell"]
 	var head: Array = []
 	var cur_path: Array = ship["path"]
@@ -2201,7 +2304,8 @@ func navy_bomb_step(sh: Dictionary, dt: float) -> void:
 	var t: int = sh["bomb"]
 	var u: Dictionary = unit_at(t)
 	sh["bomb_t"] = float(sh["bomb_t"]) - dt
-	if u.is_empty() or not is_at_war(int(sh["owner"]), int(u["owner"])) or float(sh["bomb_t"]) <= 0.0 or int(sh["state"]) != 0:
+	var ended: bool = float(sh["bomb_t"]) <= 0.0
+	if u.is_empty() or not is_at_war(int(sh["owner"]), int(u["owner"])) or int(sh["state"]) != 0:
 		sh["bomb"] = -1
 		sh["bomb_t"] = 0.0
 		return
@@ -2213,9 +2317,50 @@ func navy_bomb_step(sh: Dictionary, dt: float) -> void:
 		if int(sh["owner"]) == player or int(u["owner"]) == player:
 			events.append("Корабль уничтожил дивизию")
 			sounds.append("capture")
+		return
+	if ended:
+		# обстрел окончен: уцелевшая дивизия отброшена от берега, плитка свободна для высадки
+		sh["bomb"] = -1
+		sh["bomb_t"] = 0.0
+		_relocate_unit(u)
+		u["recover"] = maxi(int(u["recover"]), 2)
+		_rebuild()
+		if int(sh["owner"]) == player or int(u["owner"]) == player:
+			events.append("Дивизия отброшена от берега")
+			sounds.append("capture")
+
+
+## Боевой корабль атакует дивизию на береговой плитке t (при необходимости подплывает).
+func navy_attack(cid: int, ship: Dictionary, t: int) -> Dictionary:
+	if ship.is_empty() or int(ship["owner"]) != cid or int(ship["type"]) != T_WAR:
+		return {"ok": false, "msg": "Атаковать может только боевой корабль"}
+	var u: Dictionary = unit_at(t)
+	if t < 0 or u.is_empty() or not is_at_war(cid, int(u["owner"])):
+		return {"ok": false, "msg": "Там нет вражеской дивизии"}
+	if world.tile_sea[t] < 0:
+		return {"ok": false, "msg": "Плитка не на берегу"}
+	var start: int = ship["cell"]
+	if int(ship["state"]) == 0 and int(ship["dock"]) < 0 and navy_adjacent(start, t):
+		if navy_bombard(cid, ship, t):
+			return {"ok": true, "msg": "Корабль атакует"}
+		return {"ok": false, "msg": navy_bombard_reason(cid, ship, t)}
+	var route: Array = navy_path_to_shore(start, t)
+	if route.is_empty():
+		return {"ok": false, "msg": "К этому берегу не подойти"}
+	var res: Dictionary = navy_order_ship(cid, ship, int(route[route.size() - 1]), -1)
+	if res["ok"]:
+		ship["bomb_to"] = t
+		return {"ok": true, "msg": "Корабль идёт в атаку"}
+	return res
 
 
 func navy_arrive(sh: Dictionary) -> void:
+	var bto: int = sh.get("bomb_to", -1)
+	if bto >= 0:
+		sh["bomb_to"] = -1
+		sh["state"] = 0
+		sh["path"] = []
+		navy_bombard(int(sh["owner"]), sh, bto)
 	sh["state"] = 0
 	var t: int = sh["land_tile"]
 	sh["land_tile"] = -1
