@@ -297,3 +297,9 @@ scripts/view/hud.gd        интерфейс: верхняя панель, вы
 - Кнопка «Как играть» (экран выбора страны и настройки), текст обучения `HELP_TEXT` в hud.gd, версия 1.0.0 (hud.VERSION_TEXT, export_presets version/name).
 - Дальше: иконка (пришлёт пользователь), release-keystore и подпись в Actions, описание/скриншоты/политика конфиденциальности для RuStore.
 
+
+- Иконка игры: картинка пользователя (icon.png 512, assets/launcher_192/fg_432/bg_432.png, assets/icon_512_rustore.png для RuStore). Заставка Godot не менялась.
+
+## Подпись для RuStore
+- Release-ключ: alias `hexworld`, хранилище hexworld-release.keystore (вне репозитория!). В GitHub → Settings → Secrets → Actions: `KEYSTORE_B64` (base64 файла) и `KEYSTORE_PASSWORD`. Если секреты есть, workflow собирает `--export-release` с этим ключом, иначе отладочную сборку.
+- RuStore Консоль → «Подпись приложения»: ключ экспортируется утилитой pepk.jar в ZIP, плюс загружается сертификат ключа загрузки (upload_certificate.pem).
