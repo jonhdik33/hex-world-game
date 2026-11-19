@@ -86,11 +86,37 @@ jobs:
           timeout 300 godot --headless --verbose --import || true
 
       - name: Собрать APK
+        env:
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
         run: |
           mkdir -p build
-          godot --headless --verbose --export-debug "Android" build/hex-world-game.apk
+          if [ -z "$KEYSTORE_B64" ] || [ -z "$KEYSTORE_PASSWORD" ]; then
+            echo "::error::Нет секретов KEYSTORE_B64 / KEYSTORE_PASSWORD. Релизный APK не собран."
+            exit 1
+          fi
+          echo "Подпись своим ключом (release)"
+          echo "$KEYSTORE_B64" | base64 -d > "$HOME/release.keystore"
+          export GODOT_ANDROID_KEYSTORE_RELEASE_PATH="$HOME/release.keystore"
+          export GODOT_ANDROID_KEYSTORE_RELEASE_USER="hexworld"
+          export GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD="$KEYSTORE_PASSWORD"
+          godot --headless --verbose --export-release "Android" build/hex-world-game.apk
           ls -la build
           test -f build/hex-world-game.apk
+
+      - name: Проверить, что APK релизный
+        run: |
+          SDK=""
+          for CAND in "$ANDROID_HOME" "$ANDROID_SDK_ROOT" /usr/lib/android-sdk /opt/android-sdk /root/android-sdk /usr/local/lib/android/sdk; do
+            if [ -n "$CAND" ] && [ -d "$CAND/build-tools" ]; then SDK="$CAND"; break; fi
+          done
+          BT="$SDK/build-tools/$(ls "$SDK/build-tools" | sort -V | tail -1)"
+          "$BT/apksigner" verify --print-certs build/hex-world-game.apk | head -5
+          if "$BT/aapt" dump xmltree build/hex-world-game.apk AndroidManifest.xml | grep -q "debuggable.*0xffffffff"; then
+            echo "::error::APK отладочный (debuggable=true)"
+            exit 1
+          fi
+          echo "APK релизный: debuggable выключен"
 
       - name: Сохранить APK
         uses: actions/upload-artifact@v4
